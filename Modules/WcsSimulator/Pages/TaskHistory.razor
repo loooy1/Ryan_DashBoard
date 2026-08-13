@@ -1,0 +1,150 @@
+@page "/wcs-simulator/history"
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@inject TaskLedgerService Ledger
+@using GRCS.Dashboard.Modules.WcsSimulator.Models
+
+<PageTitle>下发历史</PageTitle>
+
+@* ════════════════════════════════════════════════
+   下发历史页面：从任务台账读取并展示（唯一数据源）
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleHistory" title="点击折叠/展开">
+        📋 下发历史
+        <button class="btn btn-outline btn-sm" @onclick="ClearHistory" @onclick:stopPropagation style="margin-left:auto;">清空历史</button>
+        <span class="collapse-arrow">@(IsCollapsed("th_history") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("th_history"))
+    {
+    @* 类型筛选 + 关键字搜索 *@
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;">
+        @foreach (var f in _filters)
+        {
+            <button class="chip-btn @(_activeFilter == f.Key ? "on" : "")" @onclick="() => SetFilter(f.Key)">@f.Value</button>
+        }
+        <input type="text" value="@_keyword" @oninput="OnKeywordChanged"
+               placeholder="搜索 任务ID / 托盘号 / 货物号 / 站点..." style="flex:1;min-width:200px;">
+    </div>
+
+    @if (_visible.Count == 0)
+    {
+        <p style="color:#94a3b8;">暂无下发记录</p>
+    }
+    else
+    {
+        <div style="overflow-x:auto;">
+        <table class="entry-table">
+            <thead><tr><th>状态</th><th>时间</th><th>任务ID</th><th>类型</th><th>托盘号</th><th>货物号</th><th>站点</th><th>仓库</th><th>HTTP</th></tr></thead>
+            <tbody>
+            @foreach (var e in _visible)
+            {
+                <tr>
+                    <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:@(e.Ok ? "#4ade80" : "#f87171");"></span></td>
+                    <td style="font-size:0.72rem;color:#94a3b8;white-space:nowrap;">@e.Time</td>
+                    <td style="font-family:Consolas,monospace;font-size:0.75rem;">@e.TaskId</td>
+                    <td><span class="badge">@TypeLabel(e.TaskType)</span></td>
+                    <td>@e.ContainerCode</td>
+                    <td>@e.CargoCode</td>
+                    <td>@string.Join(" → ", e.StationCode)</td>
+                    <td>@e.Warehouse</td>
+                    <td>@e.StatusCode</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+        </div>
+        @if (_filtered.Count > _visible.Count)
+        {
+            <button class="btn btn-outline btn-sm" @onclick="LoadMore" style="margin-top:8px;">加载更多（@_visible.Count / @_filtered.Count）</button>
+        }
+    }
+    }
+</div>
+
+@code {
+    private List<TaskLedgerEntry> _ledger = [];
+    private List<TaskLedgerEntry> _filtered = [];
+    private List<TaskLedgerEntry> _visible = [];
+    private string _activeFilter = "all";
+    private string _keyword = "";
+    private const int PageSize = 100;
+
+    private static readonly Dictionary<string, string> _filters = new()
+    {
+        ["all"] = "全部",
+        ["in"] = "入库",
+        ["out"] = "出库",
+        ["sort"] = "分拣",
+        ["move"] = "移库"
+    };
+
+    // ── 卡片折叠状态（持久化到浏览器）──
+    private Dictionary<string, bool> _collapsed = new() { ["th_history"] = true };
+    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
+    private async Task Toggle(string key)
+    {
+        _collapsed[key] = !IsCollapsed(key);
+        await LocalStore.SetAsync(Js, "grcs_th_collapsed", System.Text.Json.JsonSerializer.Serialize(_collapsed));
+    }
+    private Task ToggleHistory() => Toggle("th_history");
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _ledger = await Ledger.GetAsync();
+        }
+        catch { }
+
+        try
+        {
+            var cjson = LocalStore["grcs_th_collapsed"];
+            if (!string.IsNullOrEmpty(cjson) && cjson != "null")
+                _collapsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
+        }
+        catch { }
+        ApplyFilter();
+    }
+
+    private void SetFilter(string f) { _activeFilter = f; ApplyFilter(); }
+
+    private void OnKeywordChanged(ChangeEventArgs e) { _keyword = e.Value?.ToString() ?? ""; ApplyFilter(); }
+
+    private void ApplyFilter()
+    {
+        IEnumerable<TaskLedgerEntry> q = _ledger;
+        switch (_activeFilter)
+        {
+            case "in": q = q.Where(e => e.TaskType is "CONTAINER_CARRY_INBOUND" or "CARGO_CARRY_INBOUND"); break;
+            case "out": q = q.Where(e => e.TaskType is "CONTAINER_CARRY_OUTBOUND" or "CARGO_CARRY_OUTBOUND"); break;
+            case "sort": q = q.Where(e => e.TaskType == "SORTING"); break;
+            case "move": q = q.Where(e => e.TaskType == "STOCK_TRANSFER"); break;
+        }
+        if (!string.IsNullOrWhiteSpace(_keyword))
+        {
+            var k = _keyword.Trim();
+            q = q.Where(e => e.TaskId.Contains(k, StringComparison.OrdinalIgnoreCase)
+                || e.ContainerCode.Contains(k, StringComparison.OrdinalIgnoreCase)
+                || e.CargoCode.Contains(k, StringComparison.OrdinalIgnoreCase)
+                || e.StationCode.Any(s => s.Contains(k, StringComparison.OrdinalIgnoreCase)));
+        }
+        _filtered = q.ToList();
+        _visible = _filtered.Take(PageSize).ToList();
+    }
+
+    private void LoadMore() => _visible = _filtered.Take(_visible.Count + PageSize).ToList();
+
+    private static string TypeLabel(string code)
+    {
+        var t = TaskTypeRegistry.All.FirstOrDefault(x => x.Value == code);
+        return t != null ? $"{code}（{t.Label}）" : code;
+    }
+
+    /// <summary>清空全部台账记录。</summary>
+    private async Task ClearHistory()
+    {
+        await Ledger.ClearAsync();
+        _ledger.Clear(); _filtered.Clear(); _visible.Clear();
+    }
+}

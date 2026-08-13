@@ -1,0 +1,648 @@
+@page "/wcs-simulator/signal-interaction"
+@inject IWcsService WcsService
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@inject CargoCodeService CargoCodes
+@inject SignalAutoService SignalAuto
+@inject TaskLedgerService Ledger
+@implements IDisposable
+
+<PageTitle>信号交互</PageTitle>
+
+@* ════════════════════════════════════════════════
+   连接设置：WCS 后端 + GRCS 地址
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
+        🔌 连接设置
+        <span class="addr-badge">WCS 后端 @_wcsBaseUrl</span>
+        <span class="addr-badge">GRCS @_grcsBaseUrl</span>
+        <span class="collapse-arrow">@(IsCollapsed("conn") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("conn"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>WCS 后端地址</label>
+            <input type="text" @bind="_wcsBaseUrl" placeholder="http://localhost:8230">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>GRCS 地址</label>
+            <input type="text" @bind="_grcsBaseUrl" placeholder="http://localhost:8224">
+        </div>
+        <div class="form-group" style="width:80px;flex-shrink:0;">
+            <label>API 版本</label>
+            <input type="text" @bind="_apiVersion" placeholder="1.0">
+        </div>
+        <div class="form-group" style="width:100px;flex-shrink:0;">
+            <label>轮询间隔</label>
+            <input type="number" min="1" max="60" @bind="SignalAuto.PollSeconds">
+        </div>
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   进入申请：模式切换 + 事件列表
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick='() => ToggleCollapse("adm_list")' title="点击折叠/展开">
+        🚦 进入申请
+        <span class="badge @(_autoMode ? "badge-ok" : "badge-warn")">@(_autoMode ? "自动" : "手动")</span>
+        <span class="badge @(_pendingCount > 0 ? "badge-warn" : "badge-ok")">@_pendingCount 待确认</span>
+        <button class="btn @(_autoMode ? "btn-outline" : "btn-primary") btn-xs"
+                @onclick="ToggleMode" @onclick:stopPropagation disabled="@_busy" style="margin-left:8px;">
+            @(_autoMode ? "切换手动" : "切换自动")
+        </button>
+        <button class="btn btn-outline btn-sm" @onclick='() => RefreshAdmittanceNow()' @onclick:stopPropagation
+                disabled="@_busy">🔄 刷新</button>
+        <span class="refresh-ok">@_admRefreshMsg</span>
+        <span class="header-right-group">
+        @if (_admConfirming)
+        {
+            <button class="btn btn-danger btn-sm" @onclick="ClearAllEntries" @onclick:stopPropagation>确认</button>
+            <button class="btn btn-outline btn-sm" @onclick='() => _admConfirming = false' @onclick:stopPropagation>取消</button>
+        }
+        else
+        {
+            <button class="btn btn-danger btn-sm" @onclick='() => _admConfirming = true' @onclick:stopPropagation
+                    >🗑 清空全部</button>
+        }
+        <span class="clear-ok">@_admClearMsg</span>
+        <span class="collapse-arrow">@(IsCollapsed("adm_list") ? "▸ 展开" : "▾ 收起")</span>
+        </span>
+    </div>
+    @if (!IsCollapsed("adm_list"))
+    {
+    @if (!_pollingOk)
+    {
+        <div class="hint-text" style="color:#f87171;margin:8px 0;">
+            ⚠ 无法连接 WCS 后端 @_wcsBaseUrl，请确认 GrcsBackend 已启动。@_lastError
+        </div>
+    }
+    @if (_events.Count == 0)
+    {
+        <div class="hint-text" style="margin:8px 0;">暂无申请事件。GRCS 发出 station_entry_request 后会在这里出现。</div>
+    }
+    else
+    {
+    <table class="entry-table">
+        <thead><tr><th>车辆</th><th>站点</th><th>载货</th><th>时间</th><th>请求次数</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody>
+            @foreach (var e in _events)
+            {
+                var isPending = e.Status == "Pending";
+                <tr>
+                    <td><span class="entry-vehicle">🚗 @e.VehicleCode</span></td>
+                    <td>@e.StationCode</td>
+                    <td>@(e.IsLoaded ? "载货" : "空车")</td>
+                    <td>@e.Time.ToString("HH:mm:ss")</td>
+                    <td>@(e.Attempts > 0 ? $"{e.Attempts} 次" : "")</td>
+                    <td><span class="badge @(StatusBadgeClass(e.Status))">@StatusLabel(e.Status)</span></td>
+                    <td style="display:flex;gap:4px;align-items:center;">@if (isPending) {<button class="btn btn-primary btn-xs" @onclick="() => Decide(e.Key, true)" disabled="@_busy">批准</button><button class="btn btn-danger btn-xs" @onclick="() => Decide(e.Key, false)" disabled="@_busy">拒绝</button>} else {<span class="hint-text">@(e.Status == "Allowed" ? "已放行" : e.Status == "Approved" ? "等待领取" : "已拒绝")</span>}<button class="btn btn-danger btn-xs" @onclick="() => DeleteEntry(e.Key)" @onclick:stopPropagation style="margin-left:4px;">✕</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    }
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   货物到达 / 货物移除
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick='() => ToggleCollapse("arrival")' title="点击折叠/展开">
+        📦 货物到达
+        <span class="badge @(SignalAuto.ArrivalAuto ? "badge-ok" : "badge-warn")">@(SignalAuto.ArrivalAuto ? "自动" : "手动")</span>
+        <span class="badge @(_pendingArrival > 0 ? "badge-warn" : "badge-ok")">@_pendingArrival 待确认</span>
+        <button class="btn @(SignalAuto.ArrivalAuto ? "btn-outline" : "btn-primary") btn-xs"
+                @onclick="ToggleArrivalMode" @onclick:stopPropagation disabled="@_arrivalBusy" style="margin-left:8px;">
+            @(SignalAuto.ArrivalAuto ? "切换手动" : "切换自动")
+        </button>
+        <button class="btn btn-outline btn-sm" @onclick='() => RefreshArrivalsNow()' @onclick:stopPropagation
+                disabled="@_arrivalBusy">🔄 刷新</button>
+        <span class="refresh-ok">@_arrivalRefreshMsg</span>
+        <span class="header-right-group">
+        @if (_arrivalConfirming)
+        {
+            <button class="btn btn-danger btn-sm" @onclick="ClearAllArrivals" @onclick:stopPropagation>确认</button>
+            <button class="btn btn-outline btn-sm" @onclick='() => _arrivalConfirming = false' @onclick:stopPropagation>取消</button>
+        }
+        else
+        {
+            <button class="btn btn-danger btn-sm" @onclick='() => _arrivalConfirming = true' @onclick:stopPropagation
+                    >🗑 清空全部</button>
+        }
+        <span class="clear-ok">@_arrivalClearMsg</span>
+        <span class="collapse-arrow">@(IsCollapsed("arrival") ? "▸ 展开" : "▾ 收起")</span>
+        </span>
+    </div>
+    @if (!IsCollapsed("arrival"))
+    {
+        @if (_cardError != "") { <div class="hint-text" style="color:#f87171;margin:8px 0;">⚠ 卡片加载异常：@_cardError</div> }
+        @if (_arrivalCards.Count == 0) { <div class="hint-text" style="margin:8px 0;">暂无</div> } else {
+        <table class="entry-table"><thead><tr><th>输送线</th><th>任务号</th><th>容器</th><th>仓库</th><th>时间</th><th>操作</th><th>删除</th></tr></thead><tbody>
+        @foreach (var c in _arrivalCards) { <tr><td><span class="entry-vehicle">🏭 @c.ConveyorCode</span></td><td>@c.TaskId</td><td>@c.ContainerCode</td><td>@c.Warehouse</td><td>@c.Time</td><td>@if (!c.Confirmed) {<button class="btn btn-primary btn-xs" @onclick="() => ConfirmArrival(c)" disabled="@_arrivalBusy">确认</button>} else {<span class="badge badge-ok">已确认</span>}</td><td><button class="btn btn-danger btn-xs" @onclick="() => DeleteArrival(c)" @onclick:stopPropagation>✕</button></td></tr> }
+        </tbody></table>}
+    }
+</div>
+
+<div class="section-card">
+    <div class="section-header collapsible" @onclick='() => ToggleCollapse("removal")' title="点击折叠/展开">
+        📤 货物移除
+        <span class="badge @(SignalAuto.RemovalAuto ? "badge-ok" : "badge-warn")">@(SignalAuto.RemovalAuto ? "自动" : "手动")</span>
+        <span class="badge @(_pendingRemoval > 0 ? "badge-warn" : "badge-ok")">@_pendingRemoval 待确认</span>
+        <button class="btn @(SignalAuto.RemovalAuto ? "btn-outline" : "btn-primary") btn-xs"
+                @onclick="ToggleRemovalMode" @onclick:stopPropagation disabled="@_removalBusy" style="margin-left:8px;">
+            @(SignalAuto.RemovalAuto ? "切换手动" : "切换自动")
+        </button>
+        <button class="btn btn-outline btn-sm" @onclick='() => RefreshRemovalsNow()' @onclick:stopPropagation
+                disabled="@_removalBusy">🔄 刷新</button>
+        <span class="refresh-ok">@_removalRefreshMsg</span>
+        <span class="header-right-group">
+        @if (_removalConfirming)
+        {
+            <button class="btn btn-danger btn-sm" @onclick="ClearAllRemovals" @onclick:stopPropagation>确认</button>
+            <button class="btn btn-outline btn-sm" @onclick='() => _removalConfirming = false' @onclick:stopPropagation>取消</button>
+        }
+        else
+        {
+            <button class="btn btn-danger btn-sm" @onclick='() => _removalConfirming = true' @onclick:stopPropagation
+                    >🗑 清空全部</button>
+        }
+        <span class="clear-ok">@_removalClearMsg</span>
+        <span class="collapse-arrow">@(IsCollapsed("removal") ? "▸ 展开" : "▾ 收起")</span>
+        </span>
+    </div>
+    @if (!IsCollapsed("removal"))
+    {
+        @if (_cardError != "") { <div class="hint-text" style="color:#f87171;margin:8px 0;">⚠ 卡片加载异常：@_cardError</div> }
+        @if (_removalCards.Count == 0) { <div class="hint-text" style="margin:8px 0;">暂无</div> } else {
+        <table class="entry-table"><thead><tr><th>接驳位</th><th>任务号</th><th>容器</th><th>仓库</th><th>时间</th><th>操作</th><th>删除</th></tr></thead><tbody>
+        @foreach (var c in _removalCards) { <tr><td><span class="entry-vehicle">🏭 @c.ConveyorCode</span></td><td>@c.TaskId</td><td>@c.ContainerCode</td><td>@c.Warehouse</td><td>@c.Time</td><td>@if (!c.Confirmed) {<button class="btn btn-primary btn-xs" @onclick="() => ConfirmRemoval(c)" disabled="@_removalBusy">确认</button>} else {<span class="badge badge-ok">已确认</span>}</td><td><button class="btn btn-danger btn-xs" @onclick="() => DeleteRemoval(c)" @onclick:stopPropagation>✕</button></td></tr> }
+        </tbody></table>}
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   分拣信号交互
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick='() => ToggleCollapse("sorting")' title="点击折叠/展开">
+        📦 分拣信号交互
+        <span class="badge @(SignalAuto.AutoSend ? "badge-ok" : "badge-warn")" style="margin-left:8px;">@(SignalAuto.AutoSend ? "自动" : "手动")</span>
+        <span class="badge @(_pendingSorting > 0 ? "badge-warn" : "badge-ok")">@_pendingSorting 待发送</span>
+        <button class="btn @(SignalAuto.AutoSend ? "btn-outline" : "btn-primary") btn-sm" @onclick="ToggleAutoSend" @onclick:stopPropagation
+                style="margin-left:4px;">@(SignalAuto.AutoSend ? "切换手动" : "切换自动")</button>
+        <button class="btn btn-outline btn-sm" @onclick='() => RefreshSortingNow()' @onclick:stopPropagation
+                disabled="@_busy" style="margin-left:8px;">🔄 刷新</button>
+        <span class="refresh-ok">@_sortingRefreshMsg</span>
+        <span class="header-right-group">
+        @if (_sortingConfirming)
+        {
+            <button class="btn btn-danger btn-sm" @onclick="DeleteAllCards" @onclick:stopPropagation>确认</button>
+            <button class="btn btn-outline btn-sm" @onclick='() => _sortingConfirming = false' @onclick:stopPropagation>取消</button>
+        }
+        else
+        {
+            <button class="btn btn-danger btn-sm" @onclick='() => _sortingConfirming = true' @onclick:stopPropagation
+                    >🗑 清空全部</button>
+        }
+        <span class="clear-ok">@_sortingClearMsg</span>
+        <span class="collapse-arrow">@(IsCollapsed("sorting") ? "▸ 展开" : "▾ 收起")</span>
+        </span>
+    </div>
+    @if (!IsCollapsed("sorting"))
+    {
+    <div class="hint-text" style="margin-bottom:8px;">全自动：轮询发现 FINISHED 立即发 container_operation_finish 给 GRCS；手动：生成卡片等你点发送。</div>
+    @if (!_pollingOk) { <div class="hint-text" style="color:#f87171;margin:8px 0;">⚠ 无法连接 WCS 后端 @_wcsBaseUrl。@_lastError</div> }
+    @if (_cards.Count == 0)
+    {
+        <div class="hint-text">暂无分拣完成卡片。任务上报 FINISHED 且站点是分拣台时自动生成。</div>
+    }
+    else
+    {
+        @foreach (var card in _cards)
+        {
+            <div class="stage-card">
+                <div class="stage-card-header">
+                    <span class="stage-task-id" style="flex:1;">📦 分拣任务号 <code>@card.TaskId</code></span>
+                    <span style="color:#334155;margin:0 8px;">│</span>
+                    <span style="flex:1;display:flex;align-items:center;gap:12px;">
+                    @if (!string.IsNullOrEmpty(card.TaskType)) { <span class="badge badge-selected">@card.TaskType</span> }
+                    <span class="badge @(CardBadgeClass(card.Status))">@CardStatusLabel(card.Status)</span>
+                    <span class="stage-time">发现 @card.FoundAt.ToString("HH:mm:ss")@(card.SendTime.HasValue ? $" · 发送 {card.SendTime.Value:HH:mm:ss}" : "")</span>
+                    <button class="btn btn-danger btn-xs" @onclick="() => DeleteCard(card)" @onclick:stopPropagation style="margin-left:auto;">✕</button>
+                    </span>
+                </div>
+                <div style="padding:6px 0;">
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+                        <span class="stage-meta">容器 <code>@card.ContainerCode</code></span>
+                        <span class="stage-meta">分拣台 <code>@card.PickStation</code></span>
+                        <label class="sorting-check"><input type="checkbox" @bind="card.RemoveContainer" />🚪 容器出场</label>
+                    </div>
+                    <div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap;">
+                        <div class="form-group" style="flex:1;min-width:200px;">
+                            <label>回库任务号（留空=使用分拣任务号）</label>
+                            <input type="text" @bind="card.ReturnTaskId" placeholder="@card.TaskId" disabled="@(card.Status == "Sent")">
+                        </div>
+                    </div>
+                    <div class="form-grid3" style="margin-top:8px;">
+                        <div class="form-group"><label>推荐目的地</label><input type="text" @bind="card.DestStation" placeholder="留空=回原库位"></div>
+                        <div class="form-group"><label>推荐区域</label><input type="text" @bind="card.DestArea" placeholder="留空=不指定"></div>
+                        <div style="display:flex;align-items:flex-end;">
+                            <button class="btn btn-primary btn-sm" @onclick="() => SendCard(card)" disabled="@(_busy || card.Status == "Sending" || card.Status == "Sent")">@(card.Status == "Sent" ? "✓ 已发送" : "📤 发送给 GRCS")</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    }
+    @if (!string.IsNullOrEmpty(_sortingResp))
+    {
+        <div class="response-panel @_sortingRespClass" style="margin-top:8px;">@_sortingResp</div>
+    }
+    }
+</div>
+
+@code {
+    private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    // ── 连接 ──
+    private string _wcsBaseUrl = "http://localhost:8230";
+    private string _grcsBaseUrl = "http://localhost:8224";
+    private string _apiVersion = "1.0";
+    private bool _busy, _pollingOk = true;
+    private string _lastError = "";
+
+    // ── 各区域刷新/清空反馈（独立，互不干扰）──
+    private string _admRefreshMsg = "", _arrivalRefreshMsg = "", _removalRefreshMsg = "", _sortingRefreshMsg = "";
+    private string _admClearMsg = "", _arrivalClearMsg = "", _removalClearMsg = "", _sortingClearMsg = "";
+    private System.Threading.Timer? _admRefreshTimer, _arrivalRefreshTimer, _removalRefreshTimer, _sortingRefreshTimer;
+    private System.Threading.Timer? _admClearTimer, _arrivalClearTimer, _removalClearTimer, _sortingClearTimer;
+    // ── 清空确认状态 ──
+    private bool _admConfirming, _arrivalConfirming, _removalConfirming, _sortingConfirming;
+    private void ShowFeedback(Action<string> setMsg, string text, ref System.Threading.Timer? timer)
+    {
+        setMsg(text);
+        timer?.Dispose();
+        timer = new System.Threading.Timer(_ => { setMsg(""); InvokeAsync(StateHasChanged); },
+            null, TimeSpan.FromSeconds(2), Timeout.InfiniteTimeSpan);
+        StateHasChanged();
+    }
+
+    // ── 进入申请 ──
+    private bool _autoMode;
+    private bool _autoModeSeeded; // true = localStorage 有缓存，不需要从后端同步
+    private int _pendingCount;
+    private List<EntryRequestEvent> _events = [];
+
+    // ── 货物到达（自动开关/自动确认在 SignalAutoService，后台跨页面运行）──
+    private List<ArrivalCard> _arrivalCards = [];
+    private HashSet<string> _confirmedTasks = [];
+    private HashSet<string> _deletedArrivalTasks = [];
+    private bool _arrivalBusy;
+    private int _pendingArrival;
+    private string _cardError = "";
+
+    // ── 货物移除 ──
+    private List<RemovalCard> _removalCards = [];
+    private HashSet<string> _confirmedRemovalTasks = [];
+    private HashSet<string> _deletedRemovalTasks = [];
+    private bool _removalBusy;
+    private int _pendingRemoval;
+
+    // ── 分拣信号（自动发送在 SignalAutoService）──
+    private List<SortingCard> _cards = [];
+    private int _pendingSorting => _cards.Count(c => c.Status == "Pending");
+    private string _sortingResp = "";
+    private string _sortingRespClass = "";
+
+    // ── 性能优化：SignalAuto 后台自动确认后标记脏，下轮只重载必需的 localStorage ──
+    private bool _signalDirty = true;
+
+    /// <summary>
+    /// 共享刷新：一次 HTTP + 一次 JS interop → 同时产出到达/移除卡片和分拣卡片。
+    /// 避免 RefreshTaskCardsAsync 和 ScanStages 各自调用 GetTaskStageEventsAsync 造成重复 HTTP。
+    /// </summary>
+    private async Task RefreshAllAsync()
+    {
+        try
+        {
+            // ── 只要一次 HTTP：拉阶段事件（供到达/移除/分拣三者共享）──
+            var (stageOk, _, stageJson) = await WcsService.GetTaskStageEventsAsync(_wcsBaseUrl);
+            List<StageChangeEvent> stageEvents = [];
+            HashSet<string> finishedIds = [];
+            if (stageOk && !string.IsNullOrEmpty(stageJson))
+            {
+                stageEvents = System.Text.Json.JsonSerializer.Deserialize<List<StageChangeEvent>>(stageJson, _jsonOpts) ?? [];
+                foreach (var e in stageEvents)
+                    if (string.Equals(e.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase))
+                        finishedIds.Add(e.TaskId);
+            }
+
+            // ── SignalAuto 后台自动确认后才重载 localStorage 确认集合（否则用内存缓存，省 JS interop）──
+            if (_signalDirty)
+            {
+                _confirmedTasks = LoadConfirmedSet("grcs_arrival_confirmed");
+                _confirmedRemovalTasks = LoadConfirmedSet("grcs_removal_confirmed");
+                _sentTasks = LoadConfirmedSet("grcs_ss_sent");
+                _signalDirty = false;
+            }
+
+            // ── 只要一次 JS interop：拉下发历史，单趟遍历同时产出 dispatchedIds + 到达/移除卡片 ──
+            await BuildTaskCardsAsync(finishedIds);
+
+            // ── 分拣卡片复用同一次 stageEvents ──
+            BuildSortingCards(stageEvents);
+        }
+        catch (Exception ex) { _cardError = ex.Message; }
+    }
+
+    /// <summary>从任务台账构建到达/移除卡片（唯一数据源，内存缓存读取）。ContainerCode=托盘号，CargoCode=货物号。</summary>
+    private async Task BuildTaskCardsAsync(HashSet<string> finishedIds)
+    {
+        try
+        {
+            _cardError = "";
+            var entries = await Ledger.GetAsync();
+
+            // 段2 检查用：成功下发的任务号
+            var dispatchedIds = new HashSet<string>(entries.Where(e => e.Ok).Select(e => e.TaskId));
+
+            // 构建到达卡片（入库段1 自动 / 入库段2 手动）
+            var arrivals = new List<ArrivalCard>();
+            foreach (var t in entries)
+            {
+                if (string.IsNullOrEmpty(t.TaskId)) continue;
+                if (_deletedArrivalTasks.Contains(t.TaskId)) continue;
+                var isAuto = t.TaskId.StartsWith("SimAuto_", StringComparison.OrdinalIgnoreCase);
+                var isManual = t.TaskId.StartsWith("SimManual_", StringComparison.OrdinalIgnoreCase);
+                if (!isAuto && !isManual) continue;
+                if (!(isAuto && t.TaskType == "CONTAINER_CARRY_INBOUND") && !(isManual && t.TaskType == "CARGO_CARRY_INBOUND")) continue;
+                if (isAuto && (!finishedIds.Contains(t.TaskId) || !dispatchedIds.Contains(Seg2Id(t.TaskId)))) continue;
+                var st = isAuto ? t.StationCode.LastOrDefault() : t.StationCode.FirstOrDefault();
+                var cargoCode = isAuto ? await CargoCodes.EnsureAsync(t.TaskId) : t.CargoCode;
+                arrivals.Add(new ArrivalCard { TaskId = t.TaskId, ConveyorCode = (st ?? "").ToWcsCode(_mapStations), ContainerCode = cargoCode, Warehouse = t.Warehouse, Time = t.Time, Confirmed = _confirmedTasks.Contains(t.TaskId) });
+            }
+            _arrivalCards = arrivals;
+            _pendingArrival = arrivals.Count(c => !c.Confirmed);
+
+            // 构建移除卡片（出库段1 自动 / 出库段2 手动）：容器号取货物号，没有则回退托盘号
+            var removals = new List<RemovalCard>();
+            foreach (var t in entries)
+            {
+                if (string.IsNullOrEmpty(t.TaskId)) continue;
+                if (_deletedRemovalTasks.Contains(t.TaskId)) continue;
+                var isAuto = t.TaskId.StartsWith("SimAuto_", StringComparison.OrdinalIgnoreCase);
+                var isManual = t.TaskId.StartsWith("SimManual_", StringComparison.OrdinalIgnoreCase);
+                if (!isAuto && !isManual) continue;
+                if (!(isAuto && t.TaskType == "CARGO_CARRY_OUTBOUND") && !(isManual && t.TaskType == "CONTAINER_CARRY_OUTBOUND")) continue;
+                if (isAuto && (!finishedIds.Contains(t.TaskId) || !dispatchedIds.Contains(Seg2Id(t.TaskId)))) continue;
+                var st = isAuto ? t.StationCode.LastOrDefault() : t.StationCode.FirstOrDefault();
+                var containerCode = string.IsNullOrEmpty(t.CargoCode) ? t.ContainerCode : t.CargoCode;
+                removals.Add(new RemovalCard { TaskId = t.TaskId, ConveyorCode = (st ?? "").ToWcsCode(_mapStations), ContainerCode = containerCode, Warehouse = t.Warehouse, Time = t.Time, Confirmed = _confirmedRemovalTasks.Contains(t.TaskId) });
+            }
+            _removalCards = removals;
+            _pendingRemoval = removals.Count(c => !c.Confirmed);
+        }
+        catch (Exception ex) { _cardError = ex.Message; }
+    }
+
+    /// <summary>从预加载的阶段事件中筛选分拣完成卡片（不再额外调 HTTP）。</summary>
+    private void BuildSortingCards(List<StageChangeEvent> stageEvents)
+    {
+        try
+        {
+            if (_mapStations.Count == 0) return;
+            var finished = stageEvents.Where(e => e.Stage == "FINISHED").OrderBy(e => e.Time);
+            foreach (var e in finished)
+            {
+                if (!_knownTasks.Add(e.TaskId)) continue;
+                var station = _mapStations.FirstOrDefault(s => s.Mark == e.StationCode)
+                    ?? _mapStations.FirstOrDefault(s => s.Mark == e.StationCode.ToMark());
+                if (station == null) continue;
+                if ((station.StationType & (MapStationTypeBits.PickingStation | MapStationTypeBits.PeopleStation)) == 0) continue;
+                var card = new SortingCard { TaskId = e.TaskId, TaskType = string.Join("+", MapStationTypeBits.DecodeNames(station.StationType)), ContainerCode = e.ContainerCode, Warehouse = e.Warehouse, PickStation = e.StationCode, FoundAt = e.Time, ReturnTaskId = e.TaskId + "_R", Status = _sentTasks.Contains(e.TaskId) ? "Sent" : "Pending" };
+                _cards.Insert(0, card);
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>从内存缓存读取字符串集合（服务后台自动动作写入的同款集合，页面每轮刷新时合并显示）。</summary>
+    private HashSet<string> LoadConfirmedSet(string key)
+    {
+        try
+        {
+            var s = LocalStore[key];
+            if (!string.IsNullOrEmpty(s) && s != "null")
+                return System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(s, _jsonOpts) ?? [];
+        }
+        catch { }
+        return [];
+    }
+    private HashSet<string> _knownTasks = [];
+    private HashSet<string> _sentTasks = [];
+    private List<MapStationLite> _mapStations = [];
+
+    // ── 折叠 ──
+    // 默认全部折叠：避免页面打开时先展开再折叠的闪烁（localStorage 加载前就渲染了）
+    private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["adm_list"] = true, ["arrival"] = true, ["removal"] = true, ["sorting"] = true };
+    private bool IsCollapsed(string k) => _collapsed.GetValueOrDefault(k, true);
+    private async Task ToggleCollapse(string k)
+    {
+        var wasCollapsed = IsCollapsed(k);
+        _collapsed[k] = !wasCollapsed;
+        await SaveCollapsed();
+        if (wasCollapsed) await RefreshSection(k);
+    }
+    private async Task RefreshSection(string k)
+    {
+        switch (k)
+        {
+            case "adm_list": await RefreshAdmittanceNow(false); break;
+            case "arrival": await RefreshArrivalsNow(false); break;
+            case "removal": await RefreshRemovalsNow(false); break;
+            case "sorting": await RefreshSortingNow(false); break;
+        }
+    }
+    private Task ToggleConn() => ToggleCollapse("conn");
+    private async Task SaveCollapsed() => await LocalStore.SetAsync(Js, "grcs_si_collapsed", System.Text.Json.JsonSerializer.Serialize(_collapsed));
+
+    private string _storageListenerId = "";
+    private bool _storageListenerRegistered;
+    private System.Threading.Timer? _refreshDebounceTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        SignalAuto.Changed += OnSignalChanged; // 订阅信号自动确认服务（切到其他模块后服务继续后台运行，页面销毁时在 Dispose 退订）
+
+        // 读取 localStorage 状态（内存缓存，同步读取，无 JS 边界）
+        try
+        {
+            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
+            if (V("grcs_si_auto_mode") is string am) { _autoMode = am == "1"; _autoModeSeeded = true; }
+            if (V("grcs_si_collapsed") is string cjson2) _collapsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson2) ?? _collapsed;
+            if (V("grcs_warehouse") is string wh) _grcsBaseUrl = wh;
+            if (V("grcs_wcs_url") is string wcs) _wcsBaseUrl = wcs;
+            if (V("grcs_grcs_url") is string grcs) _grcsBaseUrl = grcs;
+            if (V("grcs_arrival_confirmed") is string cfm) _confirmedTasks = System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(cfm) ?? [];
+            if (V("grcs_si_del_arrival") is string da) { var l = System.Text.Json.JsonSerializer.Deserialize<List<string>>(da); if (l != null) foreach (var id in l) _deletedArrivalTasks.Add(id); }
+            if (V("grcs_removal_confirmed") is string rc) _confirmedRemovalTasks = System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(rc) ?? [];
+            if (V("grcs_si_del_removal") is string dr) { var l = System.Text.Json.JsonSerializer.Deserialize<List<string>>(dr); if (l != null) foreach (var id in l) _deletedRemovalTasks.Add(id); }
+            if (V("grcs_ss_sent") is string sent) { var list = System.Text.Json.JsonSerializer.Deserialize<List<string>>(sent); if (list != null) foreach (var id in list) _sentTasks.Add(id); }
+            if (V("grcs_ss_cards") is string cardsJ) { var saved = System.Text.Json.JsonSerializer.Deserialize<List<SortingCard>>(cardsJ, _jsonOpts); if (saved != null) { _cards = saved; foreach (var c in _cards) _knownTasks.Add(c.TaskId); } }
+            if (V("grcs_map_stations") is string mapJ) { var cache = System.Text.Json.JsonSerializer.Deserialize<MapStationCache>(mapJ); _mapStations = cache?.Stations ?? []; }
+        }
+        catch { }
+
+        // 先拉起信号自动服务（LoadConfig 读自动开关），尽快进入自动状态
+        await SignalAuto.EnsureStartedAsync();
+
+        // 以前端为主：后台把进入申请模式同步给后端（不阻塞页面初始化）
+        if (_autoModeSeeded)
+        {
+            _ = SyncAdmittanceModeAsync();
+        }
+
+        // 懒加载：只拉展开的 section 数据，折叠的等用户展开时再拉
+        await RefreshExpandedSections();
+
+        // 订阅 storage 事件（跨标签页状态变更 → 触发 UI 刷新），替代轮询定时器
+        if (!_storageListenerRegistered)
+        {
+            _storageListenerId = await Js.InvokeAsync<string>("grcsRegisterStorageListener", DotNetObjectReference.Create(this), "si_" + Guid.NewGuid().ToString("N"));
+            _storageListenerRegistered = true;
+        }
+    }
+
+    /// <summary>JS storage 事件回调，由 index.html 中的 grcsRegisterStorageListener 调用。</summary>
+    [JSInvokable("OnStorageChanged")]
+    public async Task OnStorageChanged(string key, string newValue)
+    {
+        // 将存储变更标记为脏，防抖后统一刷新，避免短时间内多次 StateHasChanged
+        _signalDirty = true;
+        ScheduleRefresh();
+    }
+
+    /// <summary>防抖动刷新调度：多个事件在 500ms 内触发只执行一次刷新。</summary>
+    private void ScheduleRefresh()
+    {
+        _refreshDebounceTimer?.Dispose();
+        _refreshDebounceTimer = new System.Threading.Timer(async _ =>
+        {
+            await RefreshExpandedSections();
+            await InvokeAsync(StateHasChanged);
+        }, null, TimeSpan.FromMilliseconds(500), Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>后台同步进入申请模式到后端（fire-and-forget，避免阻塞页面初始化）。</summary>
+    private async Task SyncAdmittanceModeAsync()
+    {
+        try { await WcsService.SetAdmittanceModeAsync(_wcsBaseUrl, _autoMode); } catch { }
+    }
+
+    /// <summary>只刷新当前展开的 section，折叠的不发 HTTP。</summary>
+    private async Task RefreshExpandedSections()
+    {
+        if (!IsCollapsed("adm_list")) { await LoadStatus(); await LoadEvents(); }
+        if (!IsCollapsed("arrival") || !IsCollapsed("removal") || !IsCollapsed("sorting")) await RefreshAllAsync();
+    }
+
+    private void OnSignalChanged()
+    {
+        _signalDirty = true;
+        // 立即从 localStorage 刷新确认集合，不等下轮轮询，消除徽章延迟
+        try
+        {
+            _confirmedTasks = LoadConfirmedSet("grcs_arrival_confirmed");
+            _confirmedRemovalTasks = LoadConfirmedSet("grcs_removal_confirmed");
+            _sentTasks = LoadConfirmedSet("grcs_ss_sent");
+            _signalDirty = false;
+        }
+        catch { }
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        SignalAuto.Changed -= OnSignalChanged;
+        _refreshDebounceTimer?.Dispose();
+        _refreshDebounceTimer = null;
+        if (_storageListenerRegistered && !string.IsNullOrEmpty(_storageListenerId))
+            try { Js.InvokeVoidAsync("grcsUnregisterStorageListener", _storageListenerId); } catch { }
+        _storageListenerRegistered = false;
+        _storageListenerId = "";
+        _admRefreshTimer?.Dispose(); _arrivalRefreshTimer?.Dispose(); _removalRefreshTimer?.Dispose(); _sortingRefreshTimer?.Dispose();
+        _admClearTimer?.Dispose(); _arrivalClearTimer?.Dispose(); _removalClearTimer?.Dispose(); _sortingClearTimer?.Dispose();
+    }
+
+    // ── 进入申请 ──
+    private async Task LoadStatus() { var (ok, code, json) = await WcsService.GetAdmittanceStatusAsync(_wcsBaseUrl); if (!ok) { _pollingOk = false; _lastError = $"HTTP {code}"; return; } _pollingOk = true; try { using var doc = System.Text.Json.JsonDocument.Parse(json); _pendingCount = doc.RootElement.GetProperty("pendingCount").GetInt32(); } catch { } }
+    private async Task LoadEvents() { var (ok, code, json) = await WcsService.GetAdmittanceEventsAsync(_wcsBaseUrl); if (!ok) { _pollingOk = false; _lastError = $"HTTP {code}"; return; } _pollingOk = true; try { _events = System.Text.Json.JsonSerializer.Deserialize<List<EntryRequestEvent>>(json, _jsonOpts) ?? []; } catch { } }
+    private async Task RefreshAdmittanceNow(bool showFeedback = true) { _busy = true; await LoadStatus(); await LoadEvents(); _busy = false; if (showFeedback) ShowFeedback(v => _admRefreshMsg = v, "✓ 刷新成功", ref _admRefreshTimer); }
+    private async Task ToggleMode() { _busy = true; _autoMode = !_autoMode; await LocalStore.SetAsync(Js, "grcs_si_auto_mode", _autoMode ? "1" : "0"); StateHasChanged(); await WcsService.SetAdmittanceModeAsync(_wcsBaseUrl, _autoMode); await LoadStatus(); _busy = false; }
+    private async Task Decide(string key, bool allow) { _busy = true; await WcsService.DecideEntryAsync(_wcsBaseUrl, key, allow); await LoadEvents(); _busy = false; }
+    private async Task DeleteEntry(string key) { await WcsService.DeleteEntryEventAsync(_wcsBaseUrl, key); _events.RemoveAll(e => e.Key == key); }
+    private async Task ClearAllEntries() { await WcsService.ClearEntryEventsAsync(_wcsBaseUrl); _events.Clear(); _admConfirming = false; ShowFeedback(v => _admClearMsg = v, "清空完成", ref _admClearTimer); }
+
+    // RefreshTaskCardsAsync 已合并到 RefreshAllAsync → BuildTaskCardsAsync（单趟遍历 + 共享阶段事件）
+
+    /// <summary>段1 任务号 → 段2 任务号（a → b）。非 SimAuto_ 或不以 a 结尾直接返回原值。</summary>
+    private static string Seg2Id(string seg1Id)
+    {
+        if (seg1Id.StartsWith("SimAuto_", StringComparison.OrdinalIgnoreCase) && seg1Id.Length >= 2 && seg1Id[^1] == 'a')
+            return seg1Id[..^1] + "b";
+        return seg1Id;
+    }
+    private async Task RefreshArrivalsNow(bool showFeedback = true) { _arrivalBusy = true; await RefreshAllAsync(); _arrivalBusy = false; if (showFeedback) ShowFeedback(v => _arrivalRefreshMsg = v, "✓ 刷新成功", ref _arrivalRefreshTimer); }
+    private async Task ToggleArrivalMode() => await SignalAuto.ToggleArrivalAsync();
+    private async Task ConfirmArrival(ArrivalCard c) { _arrivalBusy = true; var (ok, _, _) = await WcsService.SendContainerReadyAsync(_grcsBaseUrl, _apiVersion, new WcsContainerReadyRequest { TaskId = c.TaskId, StationCode = c.ConveyorCode, ContainerCode = c.ContainerCode, Warehouse = c.Warehouse }); if (ok) { _confirmedTasks.Add(c.TaskId); await LocalStore.SetAsync(Js, "grcs_arrival_confirmed", System.Text.Json.JsonSerializer.Serialize(_confirmedTasks)); } await RefreshAllAsync(); _arrivalBusy = false; }
+    private async Task RefreshRemovalsNow(bool showFeedback = true) { _removalBusy = true; await RefreshAllAsync(); _removalBusy = false; if (showFeedback) ShowFeedback(v => _removalRefreshMsg = v, "✓ 刷新成功", ref _removalRefreshTimer); }
+    private async Task ToggleRemovalMode() => await SignalAuto.ToggleRemovalAsync();
+    private async Task ConfirmRemoval(RemovalCard c) { _removalBusy = true; var (ok, _, _) = await WcsService.SendContainerRemoveAsync(_grcsBaseUrl, _apiVersion, new WcsContainerRemoveRequest { StationCode = c.ConveyorCode, ContainerCode = c.ContainerCode, Warehouse = c.Warehouse }); if (ok) { _confirmedRemovalTasks.Add(c.TaskId); await LocalStore.SetAsync(Js, "grcs_removal_confirmed", System.Text.Json.JsonSerializer.Serialize(_confirmedRemovalTasks)); } await RefreshAllAsync(); _removalBusy = false; }
+    private async void DeleteArrival(ArrivalCard c) { _arrivalCards.Remove(c); _deletedArrivalTasks.Add(c.TaskId); _confirmedTasks.Remove(c.TaskId); await SaveArrivalState(); }
+    private async void ClearAllArrivals() { foreach (var c in _arrivalCards) _deletedArrivalTasks.Add(c.TaskId); _arrivalCards.Clear(); _confirmedTasks.Clear(); await SaveArrivalState(); _arrivalConfirming = false; ShowFeedback(v => _arrivalClearMsg = v, "清空完成", ref _arrivalClearTimer); }
+    private async void DeleteRemoval(RemovalCard c) { _removalCards.Remove(c); _deletedRemovalTasks.Add(c.TaskId); _confirmedRemovalTasks.Remove(c.TaskId); await SaveRemovalState(); }
+    private async void ClearAllRemovals() { foreach (var c in _removalCards) _deletedRemovalTasks.Add(c.TaskId); _removalCards.Clear(); _confirmedRemovalTasks.Clear(); await SaveRemovalState(); _removalConfirming = false; ShowFeedback(v => _removalClearMsg = v, "清空完成", ref _removalClearTimer); }
+    private async Task SaveArrivalState() { await LocalStore.SetAsync(Js, "grcs_arrival_confirmed", System.Text.Json.JsonSerializer.Serialize(_confirmedTasks)); _deletedArrivalTasks = PruneDeleted(_deletedArrivalTasks); await LocalStore.SetAsync(Js, "grcs_si_del_arrival", System.Text.Json.JsonSerializer.Serialize(_deletedArrivalTasks)); }
+    private async Task SaveRemovalState() { await LocalStore.SetAsync(Js, "grcs_removal_confirmed", System.Text.Json.JsonSerializer.Serialize(_confirmedRemovalTasks)); _deletedRemovalTasks = PruneDeleted(_deletedRemovalTasks); await LocalStore.SetAsync(Js, "grcs_si_del_removal", System.Text.Json.JsonSerializer.Serialize(_deletedRemovalTasks)); }
+
+    /// <summary>删除集合只保留最近 300 条，防止无限增长并避免旧任务号被永久抑制（任务号按时间戳生成，越旧越不可能复用）。</summary>
+    private static HashSet<string> PruneDeleted(HashSet<string> set)
+    {
+        if (set.Count <= 300) return set;
+        return set.OrderBy(id => id).TakeLast(300).ToHashSet();
+    }
+
+    // ── 分拣信号 ──
+    private async Task ToggleAutoSend() => await SignalAuto.ToggleSortingAsync(); // 自动开关与自动发送在 SignalAutoService
+    private async Task RefreshSortingNow(bool showFeedback = true) { _busy = true; await RefreshAllAsync(); _busy = false; if (showFeedback) ShowFeedback(v => _sortingRefreshMsg = v, "✓ 刷新成功", ref _sortingRefreshTimer); }
+
+    // ScanStages 已合并到 RefreshAllAsync → BuildSortingCards（复用阶段事件，不再额外调 HTTP）
+
+    private async Task SendCard(SortingCard card)
+    {
+        if (card.Status == "Sending") return;
+        card.Status = "Sending";
+        var sendTaskId = string.IsNullOrWhiteSpace(card.ReturnTaskId) ? card.TaskId : card.ReturnTaskId;
+        var (ok, code, json) = await WcsService.SendOperationFinishAsync(_grcsBaseUrl, _apiVersion, new WcsOperationFinishRequest { TaskId = sendTaskId, ContainerCode = card.ContainerCode, RemoveContainer = card.RemoveContainer, StationCode = card.DestStation ?? "", AreaCode = card.DestArea ?? "", Warehouse = card.Warehouse });
+        card.SendTime = DateTime.Now; card.Status = ok ? "Sent" : "Failed";
+        _sortingResp = $"{(ok ? "✅" : "❌")} HTTP {code}\n\n{json}";
+        _sortingRespClass = ok ? "success" : "error";
+        if (ok) { _sentTasks.Add(card.TaskId); await PersistSentTasks(); }
+    }
+
+    private async Task PersistSentTasks() { try { await LocalStore.SetAsync(Js, "grcs_ss_sent", System.Text.Json.JsonSerializer.Serialize(_sentTasks.ToList())); var pc = _cards.Where(c => c.Status == "Sent").ToList(); await LocalStore.SetAsync(Js, "grcs_ss_cards", System.Text.Json.JsonSerializer.Serialize(pc)); } catch { } }
+
+    private async Task DeleteCard(SortingCard card) { _cards.Remove(card); _knownTasks.Remove(card.TaskId); _sentTasks.Remove(card.TaskId); await WcsService.DeleteTaskStageAsync(_wcsBaseUrl, card.TaskId); await PersistSentTasks(); StateHasChanged(); }
+    private async Task DeleteAllCards() { foreach (var c in _cards) await WcsService.DeleteTaskStageAsync(_wcsBaseUrl, c.TaskId); _cards.Clear(); _knownTasks.Clear(); _sentTasks.Clear(); await PersistSentTasks(); _sortingConfirming = false; ShowFeedback(v => _sortingClearMsg = v, "清空完成", ref _sortingClearTimer); StateHasChanged(); }
+
+    // ── 辅助 ──
+    private static string StatusLabel(string s) => s switch { "Pending" => "待确认", "Approved" => "允许待确认", "Allowed" => "已放行", "Rejected" => "已拒绝", _ => s };
+    private static string StatusBadgeClass(string s) => s switch { "Pending" => "badge-warn", "Approved" => "badge-info", "Allowed" => "badge-ok", "Rejected" => "badge-error", _ => "" };
+    private static string CardStatusLabel(string s) => s switch { "Pending" => "待发送", "Sending" => "发送中...", "Sent" => "已发送", "Failed" => "发送失败", _ => s };
+    private static string CardBadgeClass(string s) => s switch { "Pending" => "badge-warn", "Sending" => "badge-selected", "Sent" => "badge-ok", "Failed" => "badge-error", _ => "badge-empty" };
+}

@@ -1,0 +1,419 @@
+@page "/wcs-simulator/map-reader"
+@inject IJSRuntime Js
+@inject IWcsService WcsService
+@inject HttpClient Http
+@inject LocalStoreService LocalStore
+@using System.Text.Json
+@using System.IO.Compression
+@using GRCS.Dashboard.Modules.WcsSimulator.Models
+
+<PageTitle>地图信息</PageTitle>
+
+@* ════════════════════════════════════════════════
+   读取地图：接口读取 / 文件读取
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleFile" title="点击折叠/展开">
+        📂 读取地图
+        <span class="collapse-arrow">@(IsCollapsed("mr_file") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("mr_file"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
+        <div class="form-group" style="flex:1;min-width:120px;max-width:200px;">
+            <label>场景名称</label>
+            <input type="text" @bind="_warehouse" @bind:event="oninput" placeholder="Show">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>GRCS 地址</label>
+            <input type="text" @bind="_grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8224">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>WCS 后端地址</label>
+            <input type="text" @bind="_wcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8230">
+        </div>
+        <button class="btn btn-primary" @onclick="SaveWarehouse" style="white-space:nowrap;padding:10px 12px;font-size:0.85rem;border:1px solid transparent;background-clip:padding-box;">💾 保存</button>
+        <span class="badge-ok" style="white-space:nowrap;opacity:@(_warehouseSaved ? "1" : "0");transition:opacity 0.2s;margin-bottom:5px;">✅ 已保存</span>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+        <button class="btn btn-primary btn-sm" @onclick="LoadFromApi" disabled="@_loading">🌐 接口读取</button>
+        <div class="map-file-btn" style="position:relative;display:inline-flex;">
+            <button class="btn btn-outline btn-sm" disabled="@_loading" type="button" style="pointer-events:none;">📁 选择文件</button>
+            <InputFile OnChange="OnFileSelected" accept=".json" disabled="@_loading"
+                       style="position:absolute;inset:0;opacity:0;" />
+        </div>
+        @if (_loading) { <span class="badge-info">⏳ 解析中...</span> }
+        <span class="badge-ok" style="white-space:nowrap;opacity:@(_mapLoaded ? "1" : "0");transition:opacity 0.2s;">✅ 地图读取成功</span>
+    </div>
+    @if (_stations.Count > 0)
+    {
+        <div class="hint-text" style="margin-bottom:4px;">
+            已加载 <b>@_stations.Count</b> 个站点 / <b>@_pathsCount</b> 条连线
+        </div>
+    }
+    <div class="hint-text">
+        接口读取从 GRCS <code>GET /api/Map/GetMap?sceneName=&getTypes=feMap</code> 下载 zip 并自动解析 map.json；文件读取选择本地 <code>map.json</code> 直接解析。
+    </div>
+    }
+</div>
+
+@if (_stations.Count > 0)
+{
+    @* ════════════════════════════════════════════════
+       概览：按类型统计站点分布
+       ════════════════════════════════════════════════ *@
+    <div class="section-card">
+        <div class="section-header collapsible" @onclick="ToggleOverview" title="点击折叠/展开">
+            📊 站点概览
+            <span class="collapse-arrow">@(IsCollapsed("mr_overview") ? "▸ 展开" : "▾ 收起")</span>
+        </div>
+        @if (!IsCollapsed("mr_overview"))
+        {
+        <div class="task-type-grid">
+            @foreach (var (bit, name) in MapStationTypeBits.All)
+            {
+                <div class="task-type-chip" style="cursor:default;">
+                    <span class="chip-title">@name</span>
+                    <span class="chip-desc">@(_stations.Count(s => (s.StationType & bit) != 0)) 个</span>
+                </div>
+            }
+        </div>
+        <div class="hint-text">
+            总 @_stations.Count 个 · 启用 @(_stations.Count(s => s.StaEnable)) · 禁用 @(_stations.Count(s => !s.StaEnable))
+        </div>
+        }
+    </div>
+
+    @* ════════════════════════════════════════════════
+       筛选：类型 + 关键词 + 启用状态
+       ════════════════════════════════════════════════ *@
+    <div class="section-card">
+        <div class="section-header collapsible" @onclick="ToggleFilter" title="点击折叠/展开">
+            🔍 筛选站点
+            <span class="badge-info">@_filtered.Count 条</span>
+            <span class="collapse-arrow">@(IsCollapsed("mr_filter") ? "▸ 展开" : "▾ 收起")</span>
+        </div>
+        @if (!IsCollapsed("mr_filter"))
+        {
+
+        @* 类型筛选 chips *@
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+            <button class="chip-btn @(_typeFilter == 0 ? "on" : "")" @onclick="() => SetTypeFilter(0)">全部</button>
+            @foreach (var (bit, name) in MapStationTypeBits.All)
+            {
+                <button class="chip-btn @(_typeFilter == bit ? "on" : "")" @onclick="() => SetTypeFilter(bit)">@name</button>
+            }
+        </div>
+
+        <div class="form-grid3">
+            <div class="form-group">
+                <label>关键词（站点编码 / 库区）</label>
+                <input type="text" value="@_search" @oninput="OnSearchInput" @onblur="SaveState" placeholder="如 0100001427 或 storageArea">
+            </div>
+            <div class="form-group">
+                <label>状态</label>
+                <select value="@_enableFilter" @onchange="OnEnableFilterChange">
+                    <option value="">全部</option>
+                    <option value="true">仅启用</option>
+                    <option value="false">仅禁用</option>
+                </select>
+            </div>
+        </div>
+        }
+    </div>
+
+    @* ════════════════════════════════════════════════
+       站点列表表格
+       ════════════════════════════════════════════════ *@
+    <div class="section-card">
+        <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
+            📍 站点列表
+            <span class="collapse-arrow">@(IsCollapsed("mr_list") ? "▸ 展开" : "▾ 收起")</span>
+        </div>
+        @if (!IsCollapsed("mr_list"))
+        {
+        <div style="overflow-x:auto;">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>站点编码 (mark)</th>
+                        <th>类型</th>
+                        <th>库区</th>
+                        <th>楼层</th>
+                        <th>坐标 (X,Y)</th>
+                        <th>负载状态</th>
+                        <th>启用</th>
+                        <th>可转向</th>
+                        <th>可避让</th>
+                        <th>可停靠</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in _filtered)
+                    {
+                        <tr style="color:@(s.StaEnable ? "" : "#64748b");">
+                            <td style="font-family:Consolas,monospace;">@s.Mark</td>
+                            <td>@string.Join(" + ", MapStationTypeBits.DecodeNames(s.StationType))</td>
+                            <td>@string.Join(", ", s.CargoAreas)</td>
+                            <td>@s.Floor</td>
+                            <td style="font-family:Consolas,monospace;">@s.X, @s.Y</td>
+                            <td>@LoadStateText(s.SupportLoadState)</td>
+                            <td>@(s.StaEnable ? "✅" : "🚫")</td>
+                            <td>@(s.AllowTurn ? "✓" : "-")</td>
+                            <td>@(s.AllowAvoid ? "✓" : "-")</td>
+                            <td>@(s.AllowStop ? "✓" : "-")</td>
+                            <td><button class="btn btn-outline btn-xs" @onclick="() => CopyMark(s.Mark)" title="复制站点编码">📋</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (_filtered.Count == 0)
+        {
+            <div class="hint-text" style="margin-top:10px;">没有匹配的站点</div>
+        }
+        }
+    </div>
+}
+
+@code {
+    private string _warehouse = "Show";                  // 场景名称（持久化到浏览器）
+    private string _grcsBaseUrl = "http://localhost:8224"; // GRCS 地址（持久化，所有模块共用）
+    private string _wcsBaseUrl = "http://localhost:8230";  // WCS 后端地址（持久化，所有模块共用）
+    private bool _warehouseSaved;                        // 保存成功提示
+    private bool _mapLoaded;                              // 地图读取成功提示
+    private List<MapStationLite> _stations = [];       // 全部站点列表（精简数据，可持久化）
+    private int _pathsCount;                            // 连线数量
+    private bool _loading;                              // 解析中标志
+    private string _savedAt = "";                       // 上次保存到浏览器的时间
+    private int _cachedCount;                           // 保存的站点数
+
+    // ── 筛选状态（随缓存一起保存恢复）──
+    private int _typeFilter;                            // 类型筛选（0=全部）
+    private string _search = "";                        // 关键词
+    private string _enableFilter = "";                  // 启用状态筛选（空=全部）
+
+    /// <summary>筛选后的站点。</summary>
+    private List<MapStationLite> _filtered => _stations.Where(s =>
+        (_typeFilter == 0 || (s.StationType & _typeFilter) != 0)
+        && (_enableFilter == "" || s.StaEnable.ToString().ToLower() == _enableFilter)
+        && (_search == ""
+            || s.Mark.Contains(_search, StringComparison.OrdinalIgnoreCase)
+            || s.CargoAreas.Any(a => a.Contains(_search, StringComparison.OrdinalIgnoreCase)))
+    ).ToList();
+
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    // ── 卡片折叠状态（持久化到浏览器，切走再回来保持）──
+    private Dictionary<string, bool> _collapsed = new() { ["mr_file"] = true, ["mr_overview"] = true, ["mr_filter"] = true, ["mr_list"] = true };
+    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
+    private async Task Toggle(string key)
+    {
+        _collapsed[key] = !IsCollapsed(key);
+        await LocalStore.SetAsync(Js, "grcs_mr_collapsed", JsonSerializer.Serialize(_collapsed));
+    }
+    private Task ToggleFile() => Toggle("mr_file");
+    private Task ToggleOverview() => Toggle("mr_overview");
+    private Task ToggleFilter() => Toggle("mr_filter");
+    private Task ToggleList() => Toggle("mr_list");
+    // 页面初始化：从内存缓存恢复上次的地图数据与界面状态（同步读取，无 JS 边界）
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var json = LocalStore["grcs_map_stations"];
+            if (!string.IsNullOrEmpty(json) && json != "null")
+            {
+                var cache = JsonSerializer.Deserialize<MapStationCache>(json, JsonOpts);
+                if (cache?.Stations is { Count: > 0 })
+                {
+                    _stations = cache.Stations;
+                    _pathsCount = cache.PathsCount;
+                    _savedAt = cache.SavedAt;
+                    _cachedCount = cache.Stations.Count;
+                    _typeFilter = cache.Filter?.TypeFilter ?? 0;
+                    _search = cache.Filter?.Search ?? "";
+                    _enableFilter = cache.Filter?.EnableFilter ?? "";
+                }
+            }
+        }
+        catch { /* 读取缓存失败时忽略，重新选择文件即可 */ }
+
+        // 恢复场景名称（内存缓存，同步读取）
+        try
+        {
+            var wh = LocalStore["grcs_warehouse"];
+            if (!string.IsNullOrEmpty(wh) && wh != "null") _warehouse = wh;
+        }
+        catch { }
+
+        // 恢复 localStorage 状态（内存缓存，同步读取）
+        try
+        {
+            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
+            if (V("grcs_grcs_url") is string grcs) _grcsBaseUrl = grcs;
+            if (V("grcs_wcs_url") is string wcs) _wcsBaseUrl = wcs;
+            // 切到模块时始终折叠，不恢复之前展开状态
+        }
+        catch { }
+    }
+
+    /// <summary>从 GRCS 接口下载 zip 并解析 map.json。</summary>
+    private async Task LoadFromApi()
+    {
+        _loading = true;
+        try
+        {
+            var url = $"{_grcsBaseUrl.TrimEnd('/')}/api/Map/GetMap?sceneName={Uri.EscapeDataString(_warehouse)}&getTypes=feMap";
+            var response = await Http.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+            using var zipStream = await response.Content.ReadAsStreamAsync();
+            using var zip = new ZipArchive(zipStream);
+            var entry = zip.GetEntry("map.json") ?? zip.Entries.FirstOrDefault(e => e.Name == "map.json");
+            if (entry == null) throw new Exception("zip 中未找到 map.json");
+            using var entryStream = entry.Open();
+            using var reader = new StreamReader(entryStream);
+            var content = await reader.ReadToEndAsync();
+            await ParseMapContent(content);
+            _ = ShowMapLoaded();
+        }
+        catch (Exception ex)
+        {
+            _stations = [];
+            await Js.InvokeVoidAsync("alert", $"接口读取失败：{ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    /// <summary>读取用户选择的 map.json 文件并解析。</summary>
+    private async Task OnFileSelected(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file == null) return;
+
+        _loading = true;
+        try
+        {
+            using var reader = new StreamReader(file.OpenReadStream(maxAllowedSize: 100 * 1024 * 1024));
+            var content = await reader.ReadToEndAsync();
+            await ParseMapContent(content);
+            _ = ShowMapLoaded();
+        }
+        catch (Exception ex)
+        {
+            _stations = [];
+            await Js.InvokeVoidAsync("alert", $"地图文件解析失败：{ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    /// <summary>解析 map.json 内容并更新站点数据。</summary>
+    private async Task ParseMapContent(string content)
+    {
+        var map = JsonSerializer.Deserialize<MapFileData>(content, JsonOpts);
+        _stations = map?.Stations?.Values
+            .Select(s => new MapStationLite
+            {
+                Mark = s.Mark ?? "",
+                StationType = s.StationType,
+                X = s.X,
+                Y = s.Y,
+                Floor = s.Floor,
+                StaEnable = s.StaEnable,
+                CargoAreas = s.CargoAreas ?? [],
+                SupportLoadState = s.SupportLoadState,
+                AllowTurn = s.AllowTurn,
+                AllowAvoid = s.AllowAvoid,
+                AllowStop = s.AllowStop,
+            })
+            .OrderBy(s => s.Mark).ToList() ?? [];
+        _pathsCount = map?.Paths?.Count ?? 0;
+        _typeFilter = 0;
+        _search = "";
+        _enableFilter = "";
+        await SaveState();
+    }
+
+    private async Task ShowMapLoaded()
+    {
+        _mapLoaded = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        _mapLoaded = false;
+        StateHasChanged();
+    }
+
+    /// <summary>保存当前界面状态（站点数据 + 筛选条件）到浏览器。</summary>
+    private async Task SaveState()
+    {
+        var cache = new MapStationCache
+        {
+            SavedAt = DateTime.Now.ToString("HH:mm:ss"),
+            PathsCount = _pathsCount,
+            Stations = _stations,
+            Filter = new MapReaderFilterState
+            {
+                TypeFilter = _typeFilter,
+                Search = _search,
+                EnableFilter = _enableFilter,
+            }
+        };
+        await LocalStore.SetAsync(Js, "grcs_map_stations", JsonSerializer.Serialize(cache));
+        _savedAt = cache.SavedAt;
+        _cachedCount = cache.Stations.Count;
+    }
+
+    private void SetTypeFilter(int bit)
+    {
+        _typeFilter = bit;
+        _ = SaveState();
+    }
+
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        _search = e.Value?.ToString() ?? "";
+    }
+
+    private void OnEnableFilterChange(ChangeEventArgs e)
+    {
+        _enableFilter = e.Value?.ToString() ?? "";
+        _ = SaveState();
+    }
+
+    private static string LoadStateText(int state) => state switch
+    {
+        1 => "仅带载",
+        2 => "仅空载",
+        _ => "全部"
+    };
+
+    private async Task SaveWarehouse()
+    {
+        await LocalStore.SetAsync(Js, "grcs_warehouse", _warehouse);
+        await SaveAddresses();
+        _warehouseSaved = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        _warehouseSaved = false;
+        StateHasChanged();
+    }
+
+    private async Task SaveAddresses()
+    {
+        await LocalStore.SetAsync(Js, "grcs_grcs_url", _grcsBaseUrl);
+        await LocalStore.SetAsync(Js, "grcs_wcs_url", _wcsBaseUrl);
+    }
+
+    private async Task CopyMark(string? mark)
+    {
+        if (string.IsNullOrEmpty(mark)) return;
+        await Js.InvokeVoidAsync("grcsCopyText", mark);
+    }
+}

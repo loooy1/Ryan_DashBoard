@@ -1,0 +1,896 @@
+@page "/wcs-simulator/dispatch"
+@inject IWcsService WcsService
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@inject TaskLedgerService Ledger
+
+<PageTitle>WCS 任务下发</PageTitle>
+
+@* ════════════════════════════════════════════════
+   连接设置：配置 GRCS 后端地址和场景名
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
+        🔌 连接设置
+        <span class="addr-badge">GRCS @_baseUrl</span>
+        <span class="collapse-arrow">@(IsCollapsed("td_conn") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("td_conn"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>服务器地址</label>
+            <input type="text" @bind="_baseUrl" @onblur="SaveFormState" placeholder="http://localhost:8224">
+        </div>
+        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
+            <label>场景名称</label>
+            <input type="text" @bind="_warehouse" @onblur="SaveFormState" placeholder="Show">
+        </div>
+        <div class="form-group" style="width:80px;flex-shrink:0;">
+            <label>API 版本</label>
+            <select @bind="_apiVersion">
+                <option value="1.0">v1.0</option>
+            </select>
+        </div>
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   任务组配置：组ID、时间、优先级
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleGroup" title="点击折叠/展开">
+        📦 任务组配置
+        <span class="badge-info">ZkWcsTaskGroupInfo</span>
+        <span class="collapse-arrow">@(IsCollapsed("td_group") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("td_group"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>任务组 ID</label>
+            <input type="text" @bind="_groupId" readonly>
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:200px;">
+            <label>下发时间</label>
+            <input type="text" @bind="_msgTime" placeholder="yyyy-MM-ddTHH:mm">
+        </div>
+        <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
+            <label>优先级 (0-1000)</label>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <input type="range" min="0" max="1000" step="10" @bind="_priority" style="flex:1;">
+                <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_priority</span>
+            </div>
+        </div>
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   任务类型选择器：15 种托盘架/普通任务类型
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleType" title="点击折叠/展开">🎯 选择任务类型
+        @if (!string.IsNullOrEmpty(_selectedType))
+        {
+            <span class="badge-selected">@_selectedType</span>
+        }
+        else
+        {
+            <span class="badge-empty">未选择</span>
+        }
+        <span class="collapse-arrow">@(IsCollapsed("td_type") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("td_type"))
+    {
+
+    @* 任务类型芯片网格，点击选中 *@
+    <div class="task-type-grid">
+        @foreach (var tt in TaskTypeRegistry.All)
+        {
+            var isSelected = tt.Value == _selectedType;
+            <div class="task-type-chip @(isSelected ? "selected" : "")" @onclick="() => SelectType(tt)">
+                <span class="chip-title">@tt.Label</span>
+                <span class="chip-desc">@tt.Description <code class="chip-type-code">@tt.Value</code></span>
+            </div>
+        }
+    </div>
+
+    @* 选中后显示站点数量和标签提示 *@
+    <div class="hint-text">
+        @if (string.IsNullOrEmpty(_selectedType))
+        { <text>请选择任务类型</text> }
+        else
+        {
+            var tt = TaskTypeRegistry.All.First(t => t.Value == _selectedType);
+            <text>需要 @tt.StationCount 个站点: @string.Join(" → ", tt.StationLabels)</text>
+        }
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   任务卡片列表：每个卡片 = 一个任务
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleTasks" title="点击折叠/展开">
+        📝 编辑任务
+        <button class="btn btn-primary btn-sm" @onclick="AddTaskCard" @onclick:stopPropagation style="margin-left:auto;">+ 添加任务</button>
+        <span class="collapse-arrow">@(IsCollapsed("td_tasks") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("td_tasks"))
+    {
+
+    <div style="display:flex;flex-direction:column;gap:10px;">
+        @for (int i = 0; i < _taskCards.Count; i++)
+        {
+            var idx = i;                         // 捕获循环变量，防止闭包问题
+            var card = _taskCards[i];
+            var tt = TaskTypeRegistry.All.FirstOrDefault(t => t.Value == _selectedType);
+
+            <div class="task-card">
+                <div style="flex:1;display:flex;flex-direction:column;gap:8px;">
+                    @* 任务ID + 类型徽章 *@
+                    <div style="display:flex;gap:10px;align-items:center;">
+                        <span class="badge-info">@_selectedType</span>
+                        <input type="text" @bind="card.TaskId" @onblur="SaveFormState" placeholder="任务ID (唯一)" style="flex:1;">
+                    </div>
+
+                    @* 第二行：发容器（托盘号 / 货物号），带下拉选择器 *@
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span class="station-label">@ContainerLabel</span>
+                        <div style="position:relative;display:flex;flex:1;">
+                            <input type="text" value="@card.ContainerCode"
+                                   @oninput="(e) => OnContainerInput(idx, e)"
+                                   @onfocus="() => OpenContainerPicker(idx)"
+                                   @onblur="SaveFormState"
+                                   placeholder="输入 / 选择 @ContainerLabel"
+                                   disabled="@IsCargoCarryInbound"
+                                   style="flex:1;border-top-right-radius:0;border-bottom-right-radius:0;min-width:0;">
+                            <button type="button" class="picker-toggle" @onclick="() => ToggleContainerPicker(idx)" disabled="@IsCargoCarryInbound" title="选择容器">▾</button>
+                            @if (_pickerContainer == idx)
+                            {
+                                <div class="picker-overlay" @onclick="CloseContainerPicker"></div>
+                                <div class="picker-panel">
+                                    <div class="picker-list">
+                                        @if (string.IsNullOrWhiteSpace(card.ContainerCode))
+                                        {
+                                            <div class="hint-text" style="padding:8px;">请输入关键词搜索容器</div>
+                                        }
+                                        else
+                                        {
+                                            @foreach (var c in ContainerPickerResults(card.ContainerCode))
+                                            {
+                                                <div class="picker-item" @onclick="() => PickContainer(idx, c)">
+                                                    <span class="picker-mark">@c</span>
+                                                </div>
+                                            }
+                                            @if (!ContainerPickerResults(card.ContainerCode).Any())
+                                            {
+                                                <div class="hint-text" style="padding:8px;">无匹配容器</div>
+                                            }
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    @* 第三行：另一半（对应托盘 / 需要移除的货物），只读自动匹配 *@
+                    @if (IsFourLineType)
+                    {
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span class="station-label">@OtherLabel</span>
+                            <input type="text" value="@OtherDisplayText(card)" @onblur="SaveFormState"
+                                   readonly style="flex:1;@(string.IsNullOrEmpty(card.OtherCode) && !string.IsNullOrEmpty(card.ContainerCode) ? "color:#fbbf24;" : "")"
+                                   placeholder="自动匹配">
+                        </div>
+                    }
+
+                    @* 站点输入：数量由任务类型决定，支持地图下拉选择 *@
+                    <div style="display:flex;flex-direction:column;gap:4px;">
+                        @for (int j = 0; j < card.StationCodes.Count; j++)
+                        {
+                            var sj = j;
+                            <div style="display:flex;flex-direction:column;gap:2px;">
+                                <div style="display:flex;gap:8px;align-items:center;">
+                                    <span class="station-label">@(tt?.StationLabels.Length > sj ? tt.StationLabels[sj] : $"站点{sj+1}")</span>
+                                    <div style="position:relative;display:flex;flex:1;">
+                                        <input type="text" value="@card.StationCodes[sj]"
+                                               @oninput="(e) => OnStationInput(idx, sj, e)"
+                                               @onfocus="() => OpenStationPicker(idx, sj)"
+                                               placeholder="输入搜索 / 选择站点编码"
+                                               style="flex:1;border-top-right-radius:0;border-bottom-right-radius:0;min-width:0;">
+                                        <button type="button" class="picker-toggle" @onclick="() => ToggleStationPicker(idx, sj)" title="选择站点">▾</button>
+                                        @if (_pickerCard == idx && _pickerStation == sj)
+                                        {
+                                            <div class="picker-overlay" @onclick="CloseStationPicker"></div>
+                                            <div class="picker-panel">
+                                                <div class="picker-list">
+                                                    @if (string.IsNullOrWhiteSpace(card.StationCodes[sj]))
+                                                    {
+                                                        <div class="hint-text" style="padding:8px;">请输入关键词搜索站点</div>
+                                                    }
+                                                    else
+                                                    {
+                                                        @foreach (var st in StationPickerResults())
+                                                        {
+                                                            <div class="picker-item" @onclick="() => PickStation(idx, sj, st.Mark)">
+                                                                <span class="picker-mark">@st.Mark</span>
+                                                                <span class="picker-type">@string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))</span>
+                                                            </div>
+                                                        }
+                                                        @if (!StationPickerResults().Any())
+                                                        {
+                                                            <div class="hint-text" style="padding:8px;">无匹配站点</div>
+                                                        }
+                                                    }
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+                                <div class="station-hint">@StationCodeHint(card.StationCodes[sj])</div>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                @* 删除按钮 *@
+                <button class="btn btn-danger btn-xs" @onclick="() => RemoveTaskCard(idx)" style="align-self:flex-start;margin-left:12px;">✕</button>
+            </div>
+        }
+    </div>
+
+    @* 操作按钮行 *@
+    <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap;">
+        <button class="btn btn-primary" @onclick="SendTasks" disabled="@_sending">
+            @(_sending ? "⏳ 发送中..." : "🚀 下发任务")
+        </button>
+        <button class="btn btn-outline" @onclick="ResetForm">🔄 重置</button>
+        @if (!string.IsNullOrEmpty(_validationError))
+        {
+            <span style="color:#f87171;font-size:0.85rem;align-self:center;">@_validationError</span>
+        }
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   响应结果面板：显示 GRCS 后端返回的 JSON
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleResp" title="点击折叠/展开">
+        📨 响应结果
+        <span class="collapse-arrow">@(IsCollapsed("td_resp") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("td_resp"))
+    {
+    <div class="response-panel @_respClass">@_responseText</div>
+    }
+</div>
+
+@code {
+    // ── 表单字段 ──
+    private string _baseUrl = "http://localhost:8224";   // GRCS 服务器地址
+    private string _warehouse = "";                        // 场景名称
+    private string _apiVersion = "1.0";                    // API 版本
+    private string _groupId = "";                          // 任务组 ID（自动生成）
+    private string _msgTime = "";                          // 下发时间
+    private int _priority;                                  // 优先级 0-1000
+    private string _selectedType = "";                     // 当前选中的任务类型
+    private List<TaskCardData> _taskCards = new();         // 任务卡片列表
+    private bool _sending;                                  // 发送中标志
+    private string _responseText = "等待发送任务...";       // 响应面板文字
+    private string _respClass = "";                        // 响应面板样式
+    private string _validationError = "";                  // 站点校验错误
+    private int _cardCounter;                              // 任务卡片计数器（生成唯一 ID 用）
+
+    // ── 地图站点数据（从地图信息页的缓存加载，用于站点编码转换）──
+    private List<MapStationLite> _mapStations = [];
+    private int _pickerCard = -1;                          // 展开站点选择器的卡片索引
+    private int _pickerStation = -1;                       // 展开站点选择器的站点索引
+    private int _pickerContainer = -1;                     // 展开容器选择器的卡片索引
+    private List<string> _containerCodes = [];              // 所有容器编号（从 GRCS 加载）
+    private List<CargoInventoryItem> _invRecords = [];      // 容器库存记录（出库段2 托盘带货校验）
+    private DateTime _invLastQuery = DateTime.MinValue;      // 库存查询节流时间戳
+
+    /// <summary>根据地图站点类型解析下发编码：储位 → mark_1，人工分拣台/接驳位 → mark_0，其他原样。</summary>
+    /// <returns>(类型名, 下发编码)；站点不在地图中时返回 (null, null)。</returns>
+    private (string? TypeName, string? SendCode) ResolveStationCode(string mark)
+    {
+        if (string.IsNullOrWhiteSpace(mark)) return (null, null);
+        var st = _mapStations.FirstOrDefault(s => s.Mark == mark);
+        if (st == null) return (null, null);
+
+        var sendCode = st.ToWcsCode();
+        var typeName = sendCode switch
+        {
+            _ when sendCode.EndsWith("_1") => "储位",
+            _ when sendCode.EndsWith("_0") => "人工分拣台/接驳位",
+            _ => string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))
+        };
+        return (string.IsNullOrEmpty(typeName) ? "未知类型" : typeName, sendCode);
+    }
+
+    /// <summary>站点编辑栏下方的提示文字：显示实际下发的编码。</summary>
+    private string StationCodeHint(string mark)
+    {
+        if (string.IsNullOrWhiteSpace(mark)) return "";
+        var (typeName, sendCode) = ResolveStationCode(mark);
+        if (typeName == null)
+            return "⚠ 地图中未找到该站点，将原样下发";
+        return sendCode == mark
+            ? $"· {typeName}，原样下发"
+            : $"· {typeName} → 实际下发 {sendCode}";
+    }
+
+    // ── 站点选择器 ──
+    private void OpenStationPicker(int cardIdx, int stationIdx) { _pickerCard = cardIdx; _pickerStation = stationIdx; }
+    private void CloseStationPicker() { _pickerCard = -1; _pickerStation = -1; }
+    private void ToggleStationPicker(int cardIdx, int stationIdx)
+    {
+        if (_pickerCard == cardIdx && _pickerStation == stationIdx) CloseStationPicker();
+        else OpenStationPicker(cardIdx, stationIdx);
+    }
+    private async void PickStation(int cardIdx, int stationIdx, string mark)
+    {
+        if (cardIdx >= 0 && cardIdx < _taskCards.Count)
+        {
+            _taskCards[cardIdx].StationCodes[stationIdx] = mark;
+            // 入库段2：起点站点选择后重新匹配对应托盘
+            if (_selectedType == "CARGO_CARRY_INBOUND")
+                await MatchOtherWithFreshInventory(_taskCards[cardIdx]);
+        }
+        CloseStationPicker();
+    }
+    private async void OnStationInput(int cardIdx, int stationIdx, ChangeEventArgs e)
+    {
+        if (cardIdx >= 0 && cardIdx < _taskCards.Count)
+        {
+            _taskCards[cardIdx].StationCodes[stationIdx] = e.Value?.ToString() ?? "";
+            // 入库段2：起点站点变化后重新匹配对应托盘
+            if (_selectedType == "CARGO_CARRY_INBOUND")
+                await MatchOtherWithFreshInventory(_taskCards[cardIdx]);
+        }
+        _validationError = "";
+        await SaveFormState();
+    }
+    // ── 容器选择器 ──
+    private void OpenContainerPicker(int cardIdx) { _pickerContainer = cardIdx; }
+    private void CloseContainerPicker() { _pickerContainer = -1; }
+    private void ToggleContainerPicker(int cardIdx)
+    {
+        _pickerContainer = _pickerContainer == cardIdx ? -1 : cardIdx;
+    }
+    private async void PickContainer(int cardIdx, string code)
+    {
+        if (cardIdx >= 0 && cardIdx < _taskCards.Count)
+        {
+            _taskCards[cardIdx].ContainerCode = code;
+            if (IsFourLineType) await MatchOtherWithFreshInventory(_taskCards[cardIdx]);
+        }
+        CloseContainerPicker();
+    }
+    private async void OnContainerInput(int cardIdx, ChangeEventArgs e)
+    {
+        if (cardIdx >= 0 && cardIdx < _taskCards.Count)
+        {
+            _taskCards[cardIdx].ContainerCode = e.Value?.ToString() ?? "";
+            if (IsFourLineType) await MatchOtherWithFreshInventory(_taskCards[cardIdx]);
+        }
+        await SaveFormState();
+    }
+    private static bool MatchWords(string text, string keyword)
+    {
+        if (string.IsNullOrEmpty(keyword)) return true;
+        var words = keyword.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return words.All(w => text.Contains(w, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private List<string> ContainerPickerResults(string keyword)
+    {
+        return _containerCodes
+            .Where(c => MatchWords(c, keyword))
+            .ToList();
+    }
+
+    private List<MapStationLite> StationPickerResults()
+    {
+        var keyword = _pickerCard >= 0 && _pickerCard < _taskCards.Count
+            && _pickerStation >= 0 && _pickerStation < (_taskCards[_pickerCard].StationCodes?.Count ?? 0)
+            ? _taskCards[_pickerCard].StationCodes[_pickerStation] ?? "" : "";
+        var tt = TaskTypeRegistry.All.FirstOrDefault(t => t.Value == _selectedType);
+        var label = tt != null && _pickerStation >= 0 && _pickerStation < tt.StationLabels.Length
+            ? tt.StationLabels[_pickerStation] : "";
+        return _mapStations
+            .Where(s => s.StaEnable)
+            .Where(s => MatchStationType(s, label))
+            .Where(s => MatchWords(s.Mark, keyword)
+                || MapStationTypeBits.DecodeNames(s.StationType).Any(n => MatchWords(n, keyword)))
+            .ToList();
+    }
+
+    /// <summary>根据站点标签过滤站点类型。</summary>
+    private static bool MatchStationType(MapStationLite s, string label)
+    {
+        if (string.IsNullOrEmpty(label)) return true;
+        // AMR储位
+        if (label.Contains("库位") || label.Contains("储位"))
+            return (s.StationType & MapStationTypeBits.StorageLocation) != 0;
+        // 分拣台/分拣位
+        if (label.Contains("分拣"))
+            return (s.StationType & (MapStationTypeBits.PickingStation | MapStationTypeBits.PeopleStation)) != 0;
+        // 立库接驳位/输送线接驳位
+        if (label.Contains("接驳") || label.Contains("输送"))
+            return (s.StationType & MapStationTypeBits.TransferPoint) != 0;
+        return true;
+    }
+
+    /// <summary>将界面填写的站点编码转换为实际下发的编码。</summary>
+    private string ToSendCode(string mark)
+    {
+        var (_, sendCode) = ResolveStationCode(mark);
+        return sendCode ?? mark;
+    }
+
+    // ── 卡片折叠状态（持久化到浏览器，切走再回来保持）──
+    private Dictionary<string, bool> _collapsed = new() { ["td_conn"] = true, ["td_group"] = true, ["td_type"] = true, ["td_tasks"] = true, ["td_resp"] = true };
+    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
+    private async Task Toggle(string key)
+    {
+        var wasCollapsed = IsCollapsed(key);
+        _collapsed[key] = !wasCollapsed;
+        await LocalStore.SetAsync(Js, "grcs_td_collapsed", System.Text.Json.JsonSerializer.Serialize(_collapsed));
+        // 展开编辑任务区时，如果容器列表还没加载过，补拉一次
+        if (wasCollapsed && key == "td_tasks" && _containerCodes.Count == 0) await LoadContainerCodes();
+    }
+    private Task ToggleConn() => Toggle("td_conn");
+    private Task ToggleGroup() => Toggle("td_group");
+    private Task ToggleType() => Toggle("td_type");
+    private Task ToggleTasks() => Toggle("td_tasks");
+    private Task ToggleResp() => Toggle("td_resp");
+
+    /// <summary>单个任务卡片的数据模型。</summary>
+    private class TaskCardData
+    {
+        public string TaskId { get; set; } = "";
+        public string ContainerCode { get; set; } = "";   // 发容器（托盘号或货物号）
+        public string OtherCode { get; set; } = "";       // 另一半（对应托盘 / 需要移除的货物）
+        public List<string> StationCodes { get; set; } = ["", ""];
+    }
+
+    /// <summary>表单持久化状态。</summary>
+    private class FormState
+    {
+        public string BaseUrl { get; set; } = "";
+        public string Warehouse { get; set; } = "";
+        public string ApiVersion { get; set; } = "";
+        public string GroupId { get; set; } = "";
+        public string MsgTime { get; set; } = "";
+        public int Priority { get; set; }
+        public string SelectedType { get; set; } = "";
+        public List<TaskCardData> TaskCards { get; set; } = [];
+        public int CardCounter { get; set; }
+    }
+
+    // 页面初始化：从 localStorage 恢复或生成默认状态
+    protected override async Task OnInitializedAsync()
+    {
+        var restored = false;
+
+        // 读取 localStorage 状态（内存缓存，同步读取，无 JS 边界）
+        try
+        {
+            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
+
+            if (V("grcs_warehouse") is string wh) _warehouse = wh;
+            if (V("grcs_grcs_url") is string grcs) _baseUrl = grcs;
+
+            if (V("grcs_td_state") is string stateJson)
+            {
+                var state = System.Text.Json.JsonSerializer.Deserialize<FormState>(stateJson);
+                if (state != null)
+                {
+                    if (!string.IsNullOrEmpty(state.BaseUrl)) _baseUrl = state.BaseUrl;
+                    if (!string.IsNullOrEmpty(state.Warehouse)) _warehouse = state.Warehouse;
+                    if (!string.IsNullOrEmpty(state.ApiVersion)) _apiVersion = state.ApiVersion;
+                    _groupId = !string.IsNullOrEmpty(state.GroupId) ? state.GroupId : "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+                    _msgTime = !string.IsNullOrEmpty(state.MsgTime) ? state.MsgTime : DateTime.Now.ToString("yyyy-MM-ddTHH:mm");
+                    _priority = state.Priority;
+                    _selectedType = state.SelectedType;
+                    _taskCards = state.TaskCards;
+                    _cardCounter = state.CardCounter;
+                    restored = true;
+                }
+            }
+
+            if (V("grcs_map_stations") is string mapJ)
+            {
+                var cache = System.Text.Json.JsonSerializer.Deserialize<MapStationCache>(mapJ);
+                _mapStations = cache?.Stations ?? [];
+            }
+
+            if (V("grcs_td_collapsed") is string cjson) _collapsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
+        }
+        catch { }
+
+        if (!restored)
+        {
+            _groupId = "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+            _msgTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm");
+            AddTaskCard();
+        }
+        // 加载容器列表（用于容器编号下拉选择）。只在编辑任务展开时才拉。
+        if (!IsCollapsed("td_tasks")) await LoadContainerCodes();
+    }
+
+    /// <summary>加载容器库存（匹配/下拉用）。节流：2 秒内不重复查询；force 强制重查（匹配失败时）。</summary>
+    private async Task LoadContainerCodes(bool force = false)
+    {
+        if (!force && _invRecords.Count > 0 && (DateTime.Now - _invLastQuery).TotalSeconds < 2) return;
+        _invLastQuery = DateTime.Now;
+        try
+        {
+            var (ok, _, json) = await WcsService.QueryCargoInventoryAsync(_baseUrl);
+            if (ok)
+            {
+                var result = System.Text.Json.JsonSerializer.Deserialize<CargoQueryResult>(json,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (result?.Data?.Records != null)
+                {
+                    _invRecords = result.Data.Records
+                        .Where(c => !string.IsNullOrEmpty(c.Code) && !string.IsNullOrEmpty(c.CurrentStationCode))
+                        .ToList();
+                    _containerCodes = _invRecords.Select(c => c.Code!).Distinct().OrderBy(c => c).ToList();
+                }
+            }
+        }
+        catch { }
+        // 库存加载完成后，对四行模式卡片重新匹配另一半（弥补输入时库存未就绪/库存变化导致的漏匹配）
+        if (IsFourLineType)
+        {
+            foreach (var card in _taskCards) MatchOther(card);
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>带最新库存的匹配：节流查询后匹配；匹配为空则强制重查一次再试（应对库存刚被修改）。</summary>
+    private async Task MatchOtherWithFreshInventory(TaskCardData card)
+    {
+        await LoadContainerCodes();
+        MatchOther(card);
+        if (string.IsNullOrEmpty(card.OtherCode))
+        {
+            await LoadContainerCodes(true);
+            MatchOther(card);
+        }
+    }
+
+    private async Task SaveFormState()
+    {
+        try
+        {
+            var state = new FormState
+            {
+                BaseUrl = _baseUrl,
+                Warehouse = _warehouse,
+                ApiVersion = _apiVersion,
+                GroupId = _groupId,
+                MsgTime = _msgTime,
+                Priority = _priority,
+                SelectedType = _selectedType,
+                TaskCards = _taskCards,
+                CardCounter = _cardCounter
+            };
+            await LocalStore.SetAsync(Js, "grcs_td_state",
+                System.Text.Json.JsonSerializer.Serialize(state));
+        }
+        catch { }
+    }
+
+    /// <summary>是否入库-段2任务类型（容器号自动生成且不可编辑）。</summary>
+    private bool IsCargoCarryInbound => _selectedType == "CARGO_CARRY_INBOUND";
+
+    /// <summary>第二行发容器标签：托盘号 / 货物号 / 容器号。</summary>
+    private string ContainerLabel => _selectedType switch
+    {
+        "CONTAINER_CARRY_INBOUND" or "CONTAINER_CARRY_OUTBOUND" => "托盘号",
+        "CARGO_CARRY_INBOUND" or "CARGO_CARRY_OUTBOUND" or "SORTING" => "货物号",
+        _ => "容器号"
+    };
+
+    /// <summary>是否四行模式（第二行发容器 + 第三行另一半）。</summary>
+    private bool IsFourLineType => _selectedType is "CARGO_CARRY_INBOUND" or "CARGO_CARRY_OUTBOUND" or "CONTAINER_CARRY_OUTBOUND" or "SORTING";
+
+    /// <summary>第三行另一半标签。</summary>
+    private string OtherLabel => _selectedType == "CONTAINER_CARRY_OUTBOUND" ? "需要移除的货物" : "对应托盘";
+
+    /// <summary>第三行显示文本：有另一半显示；发容器已填但未匹配到则提示。</summary>
+    private string OtherDisplayText(TaskCardData card)
+    {
+        if (!string.IsNullOrEmpty(card.OtherCode)) return card.OtherCode;
+        if (string.IsNullOrEmpty(card.ContainerCode)) return "";
+        return _selectedType == "CONTAINER_CARRY_OUTBOUND" ? "未找到托盘上的货物信息" : "未找到对应的托盘信息";
+    }
+
+    /// <summary>托盘所在站点的货物号（出库段2 自动匹配"需要移除的货物"）；查不到返回空。</summary>
+    private string FindCargoForPallet(string palletCode)
+    {
+        if (string.IsNullOrEmpty(palletCode)) return "";
+        var pallet = _invRecords.FirstOrDefault(r => string.Equals(r.Code, palletCode, StringComparison.OrdinalIgnoreCase));
+        if (pallet == null || string.IsNullOrEmpty(pallet.CurrentStationCode)) return "";
+        var cargo = _invRecords.FirstOrDefault(r => r.IsCargo() && string.Equals(r.CurrentStationCode, pallet.CurrentStationCode, StringComparison.OrdinalIgnoreCase));
+        return cargo?.Code ?? "";
+    }
+
+    /// <summary>货物所在站点的托盘号（出库段1/分拣 自动匹配另一半）；查不到返回空。</summary>
+    private string FindPalletForCargo(string cargoCode)
+    {
+        if (string.IsNullOrEmpty(cargoCode)) return "";
+        var cargo = _invRecords.FirstOrDefault(r => string.Equals(r.Code, cargoCode, StringComparison.OrdinalIgnoreCase));
+        if (cargo == null || string.IsNullOrEmpty(cargo.CurrentStationCode)) return "";
+        var mark = cargo.CurrentStationCode.ToMark();
+        return _invRecords.FirstOrDefault(r => r.IsPallet() && (r.CurrentStationCode ?? "").ToMark() == mark)?.Code ?? "";
+    }
+
+    /// <summary>指定站点（起点）上的托盘号（入库段2 匹配"对应托盘"）；查不到返回空。</summary>
+    private string FindPalletAtStation(string stationCode)
+    {
+        if (string.IsNullOrEmpty(stationCode)) return "";
+        var mark = stationCode.ToMark();
+        return _invRecords.FirstOrDefault(r => r.IsPallet() && (r.CurrentStationCode ?? "").ToMark() == mark)?.Code ?? "";
+    }
+
+    /// <summary>根据任务类型自动匹配另一半（写 card.OtherCode）。</summary>
+    private void MatchOther(TaskCardData card)
+    {
+        switch (_selectedType)
+        {
+            case "CARGO_CARRY_INBOUND":            // 入库段2：按起点站点匹配托盘
+                card.OtherCode = FindPalletAtStation(card.StationCodes.Count > 0 ? card.StationCodes[0] : "");
+                break;
+            case "CARGO_CARRY_OUTBOUND":           // 出库段1：按货物匹配托盘
+            case "SORTING":                        // 分拣：按货物匹配托盘
+                card.OtherCode = FindPalletForCargo(card.ContainerCode);
+                break;
+            case "CONTAINER_CARRY_OUTBOUND":       // 出库段2：按托盘匹配货物
+                card.OtherCode = FindCargoForPallet(card.ContainerCode);
+                break;
+            default:
+                card.OtherCode = "";
+                break;
+        }
+    }
+
+    /// <summary>选中一个任务类型，自动调整所有卡片中的站点数量。</summary>
+    private async void SelectType(TaskTypeInfo tt)
+    {
+        var wasCargoCarryInbound = IsCargoCarryInbound;
+        _selectedType = tt.Value;
+        foreach (var card in _taskCards)
+        {
+            while (card.StationCodes.Count < tt.StationCount)
+                card.StationCodes.Add("");
+            while (card.StationCodes.Count > tt.StationCount)
+                card.StationCodes.RemoveAt(card.StationCodes.Count - 1);
+            // 入库-段2：自动生成容器号并锁定
+            if (IsCargoCarryInbound)
+                card.ContainerCode = "SimCargo_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+            // 切回其他类型：清空容器号待编辑
+            else if (wasCargoCarryInbound)
+                card.ContainerCode = "";
+            // 四行模式：切换类型后按最新库存重新匹配另一半
+            if (IsFourLineType) await MatchOtherWithFreshInventory(card);
+        }
+        await SaveFormState();
+    }
+
+    /// <summary>在列表末尾添加一张空白任务卡片。</summary>
+    private async void AddTaskCard()
+    {
+        _cardCounter++;
+        var tt = TaskTypeRegistry.All.FirstOrDefault(t => t.Value == _selectedType);
+        int n = tt?.StationCount ?? 2;
+        var codes = new List<string>();
+        for (int i = 0; i < n; i++) codes.Add("");
+        var card = new TaskCardData
+        {
+            TaskId = "SimManual_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper() + "_" + _cardCounter,
+            StationCodes = codes
+        };
+        // 入库段2：货物号自动生成且锁定（删除后重新添加也生成新的）
+        if (IsCargoCarryInbound)
+            card.ContainerCode = "SimCargo_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+        _taskCards.Add(card);
+        await SaveFormState();
+    }
+
+    /// <summary>删除指定位置的任务卡片。</summary>
+    private async void RemoveTaskCard(int i) { _taskCards.RemoveAt(i); await SaveFormState(); }
+
+    /// <summary>收集表单数据、拼 JSON、POST 到 GRCS 后端。</summary>
+    private async Task SendTasks()
+    {
+        // ── 前端校验 ──
+        if (string.IsNullOrEmpty(_warehouse)) { ShowResp("❌ 请填写场景名称", "error"); return; }
+        if (string.IsNullOrEmpty(_selectedType)) { ShowResp("❌ 请选择任务类型", "error"); return; }
+        if (_taskCards.Count == 0) { ShowResp("❌ 请添加至少一个任务", "error"); return; }
+
+        // ── 从卡片数据构建 WcsTaskItem 列表（站点编码按地图类型转换后下发）──
+        var tasks = _taskCards.Select(c => new WcsTaskItem
+        {
+            TaskId = c.TaskId,
+            TaskType = _selectedType,
+            ContainerCode = c.ContainerCode,
+            StationCode = c.StationCodes.Where(s => !string.IsNullOrWhiteSpace(s)).Select(ToSendCode).ToList(),
+            AreaCode = []
+        }).ToList();
+
+        // ── 站点类型校验 ──
+        _validationError = "";
+        var tt = TaskTypeRegistry.All.FirstOrDefault(t => t.Value == _selectedType);
+        for (int i = 0; i < _taskCards.Count; i++)
+        {
+            var card = _taskCards[i];
+            for (int j = 0; j < card.StationCodes.Count; j++)
+            {
+                var sc = card.StationCodes[j].Trim();
+                if (string.IsNullOrWhiteSpace(sc)) continue;
+                var label = tt?.StationLabels.Length > j ? tt.StationLabels[j] : "";
+                var station = _mapStations.FirstOrDefault(s => s.Mark == sc);
+                if (station == null) continue; // 不在地图中，无法校验，放行
+                if (!MatchStationType(station, label))
+                {
+                    _validationError = $"❌ 任务 {i+1}「{card.TaskId}」站点{j+1}「{sc}」类型不匹配：期望 {label}，实际 {string.Join("+", MapStationTypeBits.DecodeNames(station.StationType))}";
+                    StateHasChanged();
+                    return;
+                }
+            }
+        }
+
+        // ── 下发前重拉库存，确保另一半匹配基于最新库存 ──
+        await LoadContainerCodes();
+
+        // ── 四行模式：校验另一半（对应托盘/需要移除的货物）已匹配，未匹配禁止下发 ──
+        if (IsFourLineType)
+        {
+            for (int i = 0; i < _taskCards.Count; i++)
+            {
+                var card = _taskCards[i];
+                var containerCode = card.ContainerCode.Trim();
+                if (string.IsNullOrEmpty(containerCode))
+                {
+                    _validationError = $"❌ 任务 {i + 1}「{card.TaskId}」未填写{ContainerLabel}";
+                    StateHasChanged();
+                    return;
+                }
+                // 入库段2 托盘号按起点站点匹配，起点未填则无法匹配
+                if (_selectedType == "CARGO_CARRY_INBOUND" && string.IsNullOrEmpty(card.StationCodes.FirstOrDefault()?.Trim()))
+                {
+                    _validationError = $"❌ 任务 {i + 1}「{card.TaskId}」未填写起点站点（接驳位），无法匹配对应托盘";
+                    StateHasChanged();
+                    return;
+                }
+                MatchOther(card);   // 按最新库存重新匹配另一半
+                if (string.IsNullOrEmpty(card.OtherCode))
+                {
+                    var hint = _selectedType == "CONTAINER_CARRY_OUTBOUND" ? "未找到托盘上的货物信息" : "未找到对应的托盘信息";
+                    _validationError = $"❌ 任务 {i + 1} {containerCode}：{hint}，禁止下发任务";
+                    StateHasChanged();
+                    return;
+                }
+            }
+        }
+
+        foreach (var t in tasks)
+        {
+            if (string.IsNullOrWhiteSpace(t.TaskId)) { ShowResp("❌ 存在任务缺少 TaskId", "error"); return; }
+            if (t.StationCode.Count == 0) { ShowResp("❌ 存在任务缺少站点编码", "error"); return; }
+        }
+
+        // ── 构建请求体 ──
+        var payload = new WcsTaskGroup
+        {
+            GroupId = _groupId,
+            MsgTime = DateTime.TryParse(_msgTime, out var dt) ? dt.ToString("O") : DateTime.Now.ToString("O"),
+            PriorityCode = _priority,
+            Warehouse = _warehouse,
+            Tasks = tasks
+        };
+
+        // ── 发送 HTTP 请求 ──
+        _sending = true;
+        StateHasChanged();
+
+        var (ok, code, json) = await WcsService.SendTaskGroupAsync(_baseUrl, _apiVersion, payload);
+        ShowResp((ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}", ok ? "success" : "error");
+
+        // ── 保存到台账（唯一数据源，取代下发历史）──
+        try
+        {
+            var ledgerEntries = new List<TaskLedgerEntry>();
+            for (int i = 0; i < tasks.Count; i++)
+            {
+                var task = tasks[i];
+                var card = i < _taskCards.Count ? _taskCards[i] : null;
+                string containerCode = task.ContainerCode;
+                string cargoCode = "";
+                switch (task.TaskType)
+                {
+                    case "CONTAINER_CARRY_INBOUND":            // 入库段1：发托盘，无货物
+                        cargoCode = "";
+                        break;
+                    case "CARGO_CARRY_INBOUND":                // 入库段2：发货物，托盘=另一半（起点匹配）
+                        cargoCode = task.ContainerCode;
+                        containerCode = card?.OtherCode ?? FindPalletAtStation(task.StationCode.FirstOrDefault() ?? "");
+                        break;
+                    case "CARGO_CARRY_OUTBOUND":               // 出库段1：发货物，托盘=另一半
+                        cargoCode = task.ContainerCode;
+                        containerCode = card?.OtherCode ?? FindPalletForCargo(task.ContainerCode);
+                        break;
+                    case "CONTAINER_CARRY_OUTBOUND":           // 出库段2：发托盘，货物=另一半
+                        containerCode = task.ContainerCode;
+                        cargoCode = card?.OtherCode ?? FindCargoForPallet(task.ContainerCode);
+                        break;
+                    case "SORTING":                            // 分拣：发货物，托盘=另一半
+                        cargoCode = task.ContainerCode;
+                        containerCode = card?.OtherCode ?? FindPalletForCargo(task.ContainerCode);
+                        break;
+                    default:                                   // 移库等：按发的容器类型
+                        var rec = _invRecords.FirstOrDefault(r => string.Equals(r.Code, task.ContainerCode, StringComparison.OrdinalIgnoreCase));
+                        if (rec?.IsCargo() == true) { cargoCode = task.ContainerCode; containerCode = ""; }
+                        else { containerCode = task.ContainerCode; cargoCode = ""; }
+                        break;
+                }
+                ledgerEntries.Add(new TaskLedgerEntry
+                {
+                    TaskId = task.TaskId,
+                    TaskType = task.TaskType,
+                    ContainerCode = containerCode,
+                    CargoCode = cargoCode,
+                    StationCode = task.StationCode,
+                    Warehouse = _warehouse,
+                    Time = DateTime.Now.ToString("O"),
+                    Ok = ok,
+                    StatusCode = code
+                });
+            }
+            await Ledger.AppendAsync(ledgerEntries);
+        }
+        catch { /* localStorage 不可用时静默忽略 */ }
+
+        // 下发后刷新所有任务号
+        if (ok)
+        {
+            _validationError = "";
+            foreach (var card in _taskCards)
+                card.TaskId = "SimManual_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper() + "_" + (++_cardCounter);
+        }
+        _sending = false;
+        await SaveFormState();
+    }
+
+    /// <summary>更新响应面板内容。</summary>
+    private void ShowResp(string msg, string cls)
+    {
+        _responseText = msg;
+        _respClass = cls;
+    }
+
+    /// <summary>重置整个表单回到初始状态。</summary>
+    private async void ResetForm()
+    {
+        _groupId = "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+        _msgTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm");
+        _priority = 0;
+        _selectedType = "";
+        _taskCards.Clear();
+        _cardCounter = 0;
+        AddTaskCard();
+        _validationError = "";
+        ShowResp("等待发送任务...", "");
+        await SaveFormState();
+    }
+}

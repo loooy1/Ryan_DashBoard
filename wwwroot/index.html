@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GRCS 控制面板</title>
+    <base href="/" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet" />
+    <link href="css/app.css" rel="stylesheet" />
+    <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
+</head>
+<body>
+    <div id="app">Loading...</div>
+    <div id="blazor-error-ui">
+        An unhandled error has occurred.
+        <a href="" class="reload">Reload</a>
+        <a class="dismiss">🗙</a>
+    </div>
+    <script>
+        // localStorage helpers for WCS task ledger（唯一数据源，取代 history）
+        const HISTORY_KEY = 'grcs_wcs_history';
+        const TASK_LEDGER_KEY = 'grcs_task_ledger';
+
+        // 首次写入时把旧 history 迁移成台账条目后删除
+        const migrateLegacyHistory = () => {
+            try {
+                const old = localStorage.getItem(HISTORY_KEY);
+                if (old) {
+                    const entries = JSON.parse(old);
+                    if (Array.isArray(entries)) {
+                        const migrated = [];
+                        for (const e of entries) {
+                            const payload = e.Payload;
+                            if (payload && payload.Tasks && Array.isArray(payload.Tasks)) {
+                                for (const t of payload.Tasks) {
+                                    migrated.push({
+                                        TaskId: t.TaskId || '',
+                                        TaskType: t.TaskType || '',
+                                        ContainerCode: t.ContainerCode || '',
+                                        CargoCode: '',
+                                        StationCode: t.StationCode || [],
+                                        Warehouse: payload.Warehouse || '',
+                                        Time: e.Time || '',
+                                        Ok: !!e.Ok,
+                                        StatusCode: e.StatusCode || 0
+                                    });
+                                }
+                            }
+                        }
+                        if (migrated.length > 0) {
+                            let arr = [];
+                            try { arr = JSON.parse(localStorage.getItem(TASK_LEDGER_KEY) || '[]'); } catch { }
+                            localStorage.setItem(TASK_LEDGER_KEY, JSON.stringify(migrated.concat(arr).slice(0, 2000)));
+                        }
+                    }
+                }
+            } catch { }
+            localStorage.removeItem(HISTORY_KEY);
+        };
+
+        window.grcsSaveHistory = (entriesJson) => {
+            migrateLegacyHistory();
+            let entries = [];
+            try { entries = JSON.parse(entriesJson); } catch { }
+            if (!Array.isArray(entries) || entries.length === 0) return;
+            let arr = [];
+            try { arr = JSON.parse(localStorage.getItem(TASK_LEDGER_KEY) || '[]'); } catch { }
+            arr = entries.concat(arr);
+            if (arr.length > 2000) arr = arr.slice(0, 2000);
+            localStorage.setItem(TASK_LEDGER_KEY, JSON.stringify(arr));
+        };
+        window.grcsLoadHistory = () => localStorage.getItem(TASK_LEDGER_KEY) || '[]';
+        // 首读前先迁移旧 history，保证 C# 内存缓存首读即拿到完整台账
+        window.grcsLoadTaskLedgerMigrated = () => {
+            migrateLegacyHistory();
+            return localStorage.getItem(TASK_LEDGER_KEY) || '[]';
+        };
+        window.grcsClearHistory = () => localStorage.removeItem(TASK_LEDGER_KEY);
+        // 跨标签页台账变更感知：storage 事件仅在其他标签页写入时触发（本标签页写不走此事件，缓存已即时更新）
+        window.__ledgerVersion = 0;
+        window.addEventListener('storage', (e) => {
+            if (e.key === TASK_LEDGER_KEY || e.key === null) window.__ledgerVersion++;
+        });
+        window.grcsLedgerVersion = () => window.__ledgerVersion || 0;
+        window.grcsCopyText = (text) => navigator.clipboard.writeText(text);
+
+        // ── 通用 storage 事件广播（用于跨标签页状态同步）──
+        // 任意 key 被其他标签页修改时，发布对应事件，供 Blazor 层订阅
+        const GRCS_STORAGE_EVENTS = [
+            'grcs_arrival_confirmed', 'grcs_removal_confirmed', 'grcs_ss_sent',
+            'grcs_arrival_auto', 'grcs_removal_auto', 'grcs_ss_auto',
+            'grcs_signal_auto_leader'
+        ];
+        window.__grcsStorageEvents = {};
+        window.addEventListener('storage', (e) => {
+            if (!e.key) return; // null key = 其他标签页关闭，忽略
+            const key = e.key;
+            // 通知所有已注册的监听器
+            const listeners = window.__grcsStorageListeners || [];
+            for (const fn of listeners) { try { fn(key, e.newValue); } catch {} }
+            // 通知事件总线
+            const ev = window.__grcsStorageEvents[key];
+            if (ev) { for (const fn of ev) { try { fn(e.newValue); } catch {} } }
+        });
+
+        // 注册监听器：返回取消订阅函数
+        window.__grcsRegisterStorageListener = (key, fn) => {
+            (window.__grcsStorageListeners ||= []).push(fn);
+            return () => { const i = (window.__grcsStorageListeners || []).indexOf(fn); if (i >= 0) window.__grcsStorageListeners.splice(i, 1); };
+        };
+
+        // SignalAutoService 专用桥：监听关键状态变更，发布到 JS 事件总线，Blazor 订阅后刷新 UI
+        window.grcsRegisterStorageBridge = (bridgeName) => {
+            const dispatch = (key, value) => {
+                // 将 key 映射为事件类型
+                const evKey = 'grcs_' + key + '_changed';
+                try { window.dispatchEvent(new CustomEvent(evKey, { detail: { key, value } })); } catch {}
+            };
+            window.__grcsRegisterStorageListener('grcs_arrival_confirmed', () => dispatch('grcs_arrival_confirmed'));
+            window.__grcsRegisterStorageListener('grcs_removal_confirmed', () => dispatch('grcs_removal_confirmed'));
+            window.__grcsRegisterStorageListener('grcs_ss_sent', () => dispatch('grcs_ss_sent'));
+            window.__grcsRegisterStorageListener('grcs_arrival_auto', () => dispatch('grcs_arrival_auto'));
+            window.__grcsRegisterStorageListener('grcs_removal_auto', () => dispatch('grcs_removal_auto'));
+            window.__grcsRegisterStorageListener('grcs_ss_auto', () => dispatch('grcs_ss_auto'));
+        };
+
+        // Blazor JS interop：注册/取消注册 storage 事件监听器
+        // 所有 storage 变更统一派发到一个 C# 方法，由组件内部按 key 路由
+        window.__grcsStorageCallbackId = null;
+        window.__grcsStorageCallbackRef = null;
+        window.grcsRegisterStorageListener = (dotnetRef, callbackId) => {
+            window.__grcsStorageCallbackId = callbackId;
+            window.__grcsStorageCallbackRef = dotnetRef;
+            const handler = (e) => {
+                if (!e.key) return;
+                try { dotnetRef.invokeMethodAsync('OnStorageChanged', e.key, e.newValue ?? ''); } catch {}
+            };
+            window.addEventListener('storage', handler);
+            window.__grcsStorageHandler = handler;
+        };
+        window.grcsUnregisterStorageListener = () => {
+            const handler = window.__grcsStorageHandler;
+            if (handler) { window.removeEventListener('storage', handler); window.__grcsStorageHandler = null; }
+            window.__grcsStorageCallbackId = null;
+            window.__grcsStorageCallbackRef = null;
+        };
+
+        // 台账别名（与 history 同一数据源）
+        window.grcsSaveTaskLedger = window.grcsSaveHistory;
+        window.grcsLoadTaskLedger = () => localStorage.getItem(TASK_LEDGER_KEY) || '[]';
+        // localStorage helpers for map station cache
+        const MAP_KEY = 'grcs_map_stations';
+        window.grcsMapSave = (json) => localStorage.setItem(MAP_KEY, json);
+        window.grcsMapLoad = () => localStorage.getItem(MAP_KEY) || 'null';
+        window.grcsMapRemove = () => localStorage.removeItem(MAP_KEY);
+        // generic localStorage helpers
+        window.grcsStoreSave = (key, json) => localStorage.setItem(key, json);
+        window.grcsStoreLoad = (key) => localStorage.getItem(key) || 'null';
+        // batch load: pass JSON array of keys → returns JSON object {key: value, ...}
+        window.grcsStoreLoadAll = (keysJson) => {
+            let keys = [];
+            try { keys = JSON.parse(keysJson); } catch { return '{}'; }
+            const result = {};
+            for (const k of keys) result[k] = localStorage.getItem(k);
+            return JSON.stringify(result);
+        };
+    </script>
+    <script src="_framework/blazor.webassembly.js"></script>
+    <script src="_content/MudBlazor/MudBlazor.min.js"></script>
+</body>
+</html>

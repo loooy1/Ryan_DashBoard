@@ -1,0 +1,506 @@
+@page "/wcs-simulator/automation"
+@inject IWcsService WcsService
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@inject CargoCodeService CargoCodes
+@inject StationLockService StationLocks
+@inject AutoRunService Auto
+@inject ContainerTaskService Container
+@implements IDisposable
+@using System.Text.Json
+@using GRCS.Dashboard.Modules.WcsSimulator.Models
+
+<PageTitle>自动化任务</PageTitle>
+
+@* ════════════════════════════════════════════════
+   连接设置
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
+        🔌 连接设置
+        <span class="addr-badge">GRCS @_baseUrl</span>
+        <span class="collapse-arrow">@(IsCollapsed("conn") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("conn"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>GRCS 地址</label>
+            <input type="text" @bind="_baseUrl" placeholder="http://localhost:8224">
+        </div>
+        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
+            <label>场景名称</label>
+            <input type="text" @bind="_sceneName" placeholder="Show">
+        </div>
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   批量移动任务下发
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleBatch" title="点击折叠/展开">
+        📦 批量移动任务下发
+        <span class="badge-info">统一自动分配车辆</span>
+        <span class="collapse-arrow">@(IsCollapsed("batch") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("batch"))
+    {
+
+    @* 站点来源模式 *@
+    <div style="height:200px;overflow:visible;">
+    <div class="form-group">
+        <label>站点来源</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="chip-btn @(_batchSource == "manual" ? "on" : "")" @onclick="SetBatchSourceManual">✍️ 手输站点</button>
+            <button class="chip-btn @(_batchSource == "type" ? "on" : "")" @onclick="SetBatchSourceType">🏷️ 按类型选择</button>
+        </div>
+    </div>
+
+    @if (_batchSource == "manual")
+    {
+        <div class="form-group">
+            <label>站点编码（多个用 逗号/空格/换行 分隔）</label>
+            <textarea @bind="_batchManualSites" @bind:event="oninput" rows="2" placeholder="0100001427, 0100001837&#10;0100001806"></textarea>
+            <div class="hint-text" style="margin-top:4px;">
+                已识别 @_manualSites.Count 个站点
+                @if (_mapStations.Count > 0) { <text>· 其中 @(_batchPool.Count) 个存在于地图数据</text> }
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="form-group">
+            <label>选择站点类型（可多选）</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                @foreach (var (bit, name) in MapStationTypeBits.All)
+                {
+                    <button class="chip-btn @((_batchTypeFilter & bit) != 0 ? "on" : "")" @onclick="() => ToggleBatchType(bit)">@name</button>
+                }
+            </div>
+        </div>
+        <div class="form-group" style="margin-top:6px;">
+            <label>选择层数</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="chip-btn @(_batchFloorFilter == 0 ? "on" : "")" @onclick="() => _batchFloorFilter = 0">全部</button>
+                @foreach (var f in _availableFloors)
+                {
+                    <button class="chip-btn @(_batchFloorFilter == f ? "on" : "")" @onclick="() => _batchFloorFilter = f">@f 层</button>
+                }
+            </div>
+        </div>
+        <div class="hint-text" style="margin-top:4px;">
+            @if (_batchPool.Count > 0)
+            {
+                <text>候选池 @_batchPool.Count 个：@string.Join(", ", _batchPool.Take(3).Select(s => s.Mark)) …</text>
+            }
+            else if (_batchTypeFilter != 0)
+            {
+                <text>不存在当前类型站点</text>
+            }
+            else
+            {
+                <text>请先选择类型和层数</text>
+            }
+        </div>
+    }
+    </div>
+
+    <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
+
+    @* 执行次数 + 优先级 + 名称前缀 *@
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;">
+        <div class="form-group" style="flex:1;min-width:100px;max-width:140px;">
+            <label>执行次数</label>
+            <input type="number" @bind="_batchCount" min="1" max="500" />
+        </div>
+        <div class="form-group" style="flex:1;min-width:90px;max-width:120px;">
+            <label>下发间隔(秒)</label>
+            <input type="number" @bind="_batchInterval" min="0" max="60" step="1">
+        </div>
+        <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
+            <label>优先级 (0-1000)</label>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <input type="range" min="0" max="1000" step="10" @bind="_batchPriority" style="flex:1;">
+                <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_batchPriority</span>
+            </div>
+        </div>
+        <div class="form-group" style="flex:1;min-width:160px;max-width:260px;">
+            <label>OrderId 前缀</label>
+            <input type="text" @bind="_batchOrderIdPrefix" placeholder="Simulate_MoveOnly_">
+        </div>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;">
+        <button class="btn btn-primary" @onclick="GenerateBatch" disabled="@_batchSending">🎲 随机生成 @_batchCount 个任务</button>
+        <button class="btn btn-outline" @onclick="ClearBatch">🧹 清空</button>
+    </div>
+
+    @if (_generatedTasks.Count > 0)
+    {
+        <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;">
+            <span class="badge-info">候选池 @_batchPool.Count 个 → 已生成 @_generatedTasks.Count 个任务</span>
+            <button class="btn btn-outline btn-sm" @onclick="GenerateBatch">🔄 重新生成</button>
+        </div>
+
+        @* 生成的任务预览 *@
+        <div style="max-height:200px;overflow-y:auto;margin-top:8px;border:1px solid #334155;border-radius:8px;background:#0b1220;">
+            @foreach (var t in _generatedTasks)
+            {
+                <div style="display:flex;justify-content:space-between;gap:10px;padding:5px 10px;border-bottom:1px solid #1e293b;font-size:0.75rem;">
+                    <span style="color:#64748b;">#@t.No</span>
+                    <span style="font-family:Consolas,monospace;color:#e2e8f0;">@t.Mark</span>
+                    <span style="color:#94a3b8;">@TypeLabel(t.StationType)</span>
+                </div>
+            }
+        </div>
+
+        <div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-primary" @onclick="SendBatch" disabled="@_batchSending">
+                @(_batchSending ? $"⏳ 下发中 {_batchSent}/{_batchTotal} ..." : "🚀 批量下发")
+            </button>
+            <span class="hint-text" style="margin:0;">逐条调用 ChangeFloor 接口下发</span>
+        </div>
+    }
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   自动容器任务下发（状态托管到 ContainerTaskService，切模块不中断）
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleContainer" title="点击折叠/展开">
+        📦 自动容器任务下发
+        <span class="badge-info">两段式自动任务 · 跨模块执行</span>
+        <span class="collapse-arrow">@(IsCollapsed("container") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("container"))
+    {
+
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:100px;max-width:140px;">
+            <label>任务数量</label>
+            <input type="number" @bind="_containerCount" min="1" max="100" />
+        </div>
+        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
+            <label>下发间隔(秒)</label>
+            <input type="number" @bind="_containerInterval" min="0" max="30" step="1">
+        </div>
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <button class="btn @(_containerFlow == 1 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 1'>
+            📥 空托盘入库
+        </button>
+        <button class="btn @(_containerFlow == 2 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 2'>
+            📤 带货托盘出库
+        </button>
+        <button class="btn @(_containerFlow == 3 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 3'>
+            🔀 带货托盘分拣
+        </button>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-outline btn-sm" @onclick="RefreshContainerInventory" disabled="@Container.Busy">📋 查询库存</button>
+        <button class="btn btn-primary" @onclick="ExecuteContainerAuto" disabled="@Container.Busy">
+            @(Container.Busy ? $"⏳ 执行中 {Container.Done}/{Container.Total} ..." : "🚀 执行")
+        </button>
+    </div>
+
+    @* 库存缓存（查询后显示，切换模块再回来仍然可见） *@
+    @if (Container.EmptyPallets > 0 || Container.LoadedPallets > 0 || Container.Cargos > 0)
+    {
+        <div class="hint-text" style="margin-top:6px;">
+            库存缓存：空托 @Container.EmptyPallets / 带货托 @Container.LoadedPallets / 货物 @Container.Cargos / 配对货 @Container.PairedCargos
+        </div>
+    }
+
+    @* 执行日志（切模块回来仍然可见） *@
+    @if (Container.Logs.Count > 0)
+    {
+        <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span class="badge-info" style="margin-bottom:6px;">执行日志</span>
+            <button class="btn btn-outline btn-sm" @onclick="ClearContainerLogs" disabled="@Container.Busy" style="margin-bottom:6px;">🧹 清空日志</button>
+        </div>
+        <div style="max-height:260px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
+            @foreach (var log in Container.Logs)
+            {
+                <div style="color:@log.Color;">@log.Time @log.Message</div>
+            }
+        </div>
+    }
+
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   自动化（轮询储位自动下发）
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleAutoSection" title="点击折叠/展开">
+        🤖 自动化
+        <span class="badge-info">轮询储位 · 自动下发</span>
+        <span class="collapse-arrow">@(IsCollapsed("auto") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("auto"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
+            <label>轮询间隔(秒)</label>
+            <input type="number" @bind="Auto.Interval" min="1" max="60" step="1" />
+        </div>
+        <div class="hint-text" style="padding-bottom:6px;">
+            发现空托 → 入库；任务完成后自动解除占用，下轮可再次发现
+        </div>
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">
+        <span class="hint-text" style="padding-bottom:4px;align-self:center;">带货托任务：</span>
+        <button class="btn btn-sm @(Auto.FlowMode == 0 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 0'>🔀 出库/分拣交替</button>
+        <button class="btn btn-sm @(Auto.FlowMode == 1 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 1'>🔀 只分拣</button>
+        <button class="btn btn-sm @(Auto.FlowMode == 2 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 2'>📤 只出库</button>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
+        <button class="btn @(Auto.Running ? "btn-danger" : "btn-primary")" @onclick="ToggleAuto">
+            @(Auto.Running ? "⏹ 停止" : "▶ 启动")
+        </button>
+        <button class="btn btn-outline btn-sm" @onclick="ClearAutoLogs" disabled="@Auto.Running">🧹 清空日志</button>
+        @if (Auto.Running)
+        {
+            <span class="hint-text">⏳ 轮询中... 已下发 @Auto.Dispatched 个任务</span>
+        }
+    </div>
+
+    <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
+    <div style="max-height:360px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;">
+        @foreach (var log in Auto.Logs)
+        {
+            <div style="color:@log.Color;">@log.Time @log.Message</div>
+        }
+        @if (Auto.Logs.Count == 0)
+        {
+            <div class="hint-text">暂无日志，点击「启动」开始轮询储位</div>
+        }
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   响应结果
+   ════════════════════════════════════════════════ *@
+@if (!string.IsNullOrEmpty(_responseText))
+{
+    <div class="section-card">
+        <div class="response-panel @_respClass">@_responseText</div>
+    </div>
+}
+
+@code {
+    // ── 连接设置 ──
+    private string _baseUrl = "http://localhost:8224";
+    private string _wcsBaseUrl = "http://localhost:8230"; // task-stages 阶段事件源（与信号交互页一致）
+    private string _sceneName = "";
+
+    // ── 地图站点缓存 ──
+    private List<MapStationLite> _mapStations = [];
+
+    // ── 批量参数 ──
+    private string _batchSource = "manual";
+    private string _batchManualSites = "";
+    private int _batchTypeFilter;
+    private int _batchFloorFilter;
+    private int _batchCount = 5;
+    private int _batchPriority = 50;
+    private string _batchOrderIdPrefix = "Simulate_MoveOnly_";
+    private int _batchInterval = 3;
+    private List<BatchTaskItem> _generatedTasks = [];
+    private bool _batchSending;
+    private int _batchSent;
+    private int _batchTotal;
+
+    // ── 响应 ──
+    private string _responseText = "";
+    private string _respClass = "";
+
+    private record BatchTaskItem(int No, string Mark, int StationType);
+
+    // ── 折叠 ──
+    private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["batch"] = true, ["container"] = true, ["auto"] = true };
+    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
+    private async Task Toggle(string key)
+    {
+        _collapsed[key] = !IsCollapsed(key);
+        await LocalStore.SetAsync(Js, "grcs_auto_collapsed", JsonSerializer.Serialize(_collapsed));
+    }
+    private Task ToggleConn() => Toggle("conn");
+    private Task ToggleBatch() => Toggle("batch");
+    private Task ToggleContainer() => Toggle("container");
+    private Task ToggleAutoSection() => Toggle("auto");
+
+    // ── 自动化（运行状态/日志在 AutoRunService 中，跨导航存活；页面只订阅刷新） ──
+    private void OnAutoChanged() => InvokeAsync(StateHasChanged);
+    private void OnContainerChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() { Auto.Changed -= OnAutoChanged; Container.Changed -= OnContainerChanged; }
+    private Task ToggleAuto() => Auto.ToggleAsync();
+    private void ClearAutoLogs() => Auto.ClearLogs();
+
+    // ── 自动容器任务（用户输入参数；执行状态托管到 ContainerTaskService）──
+    private int _containerFlow = 1;
+    private int _containerCount = 3;
+    private int _containerInterval = 3;
+
+    private async Task RefreshContainerInventory()
+    {
+        await Container.RefreshInventoryAsync();
+    }
+
+    private void ClearContainerLogs() => Container.ClearLogs();
+
+    private async Task ExecuteContainerAuto()
+    {
+        var result = await Container.ExecuteAsync(_containerFlow, _containerCount, _containerInterval);
+        ShowResp(result, result.StartsWith("✅") ? "success" : "error");
+    }
+
+
+    private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    protected override async Task OnInitializedAsync()
+    {
+        Auto.Changed += OnAutoChanged;     // 订阅自动化状态变化（页面销毁时在 Dispose 退订）
+        Container.Changed += OnContainerChanged; // 订阅容器任务状态变化
+        // 读取共享配置（内存缓存，同步读取）
+        try
+        {
+            var wh = LocalStore["grcs_warehouse"];
+            if (!string.IsNullOrEmpty(wh) && wh != "null") _sceneName = wh;
+            var grcs = LocalStore["grcs_grcs_url"];
+            if (!string.IsNullOrEmpty(grcs) && grcs != "null") _baseUrl = grcs;
+            var wcs = LocalStore["grcs_wcs_url"];
+            if (!string.IsNullOrEmpty(wcs) && wcs != "null") _wcsBaseUrl = wcs;
+        }
+        catch { }
+
+        try
+        {
+            var json = LocalStore["grcs_map_stations"];
+            if (!string.IsNullOrEmpty(json) && json != "null")
+            {
+                var cache = JsonSerializer.Deserialize<MapStationCache>(json, JsonOpts);
+                _mapStations = cache?.Stations ?? [];
+            }
+        }
+        catch { }
+
+        try
+        {
+            var cjson = LocalStore["grcs_auto_collapsed"];
+            if (!string.IsNullOrEmpty(cjson) && cjson != "null")
+                _collapsed = JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
+        }
+        catch { }
+    }
+
+    private List<string> _manualSites => _batchManualSites
+        .Split([',', '，', ';', '；', ' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Distinct().ToList();
+
+    private List<MapStationLite> _batchPool
+    {
+        get
+        {
+            IEnumerable<MapStationLite> stations;
+            if (_batchSource == "type")
+            {
+                stations = _batchTypeFilter == 0
+                    ? _mapStations.Where(s => s.StaEnable)
+                    : _mapStations.Where(s => s.StaEnable && (s.StationType & _batchTypeFilter) == _batchTypeFilter);
+            }
+            else if (_mapStations.Count == 0)
+            {
+                stations = _manualSites.Select(m => new MapStationLite { Mark = m });
+            }
+            else
+            {
+                stations = _manualSites
+                    .Select(m => _mapStations.FirstOrDefault(s => s.Mark.Equals(m, StringComparison.OrdinalIgnoreCase)))
+                    .Where(s => s != null).Select(s => s!);
+            }
+            if (_batchFloorFilter != 0)
+                stations = stations.Where(s => s.Floor == _batchFloorFilter);
+            return stations.ToList();
+        }
+    }
+
+    private void SetBatchSourceManual() { _batchSource = "manual"; _batchFloorFilter = 0; _generatedTasks.Clear(); }
+    private void SetBatchSourceType() { _batchSource = "type"; _batchFloorFilter = 0; _batchTypeFilter = 0; _generatedTasks.Clear(); }
+    private void ToggleBatchType(int bit) { _batchTypeFilter ^= bit; _generatedTasks.Clear(); }
+    private List<int> _availableFloors => _mapStations
+        .Where(s => s.StaEnable && (_batchTypeFilter == 0 || (s.StationType & _batchTypeFilter) == _batchTypeFilter))
+        .Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
+    private void ClearBatch() => _generatedTasks.Clear();
+
+    private void GenerateBatch()
+    {
+        var pool = _batchPool;
+        if (pool.Count == 0) { ShowResp("❌ 候选站点池为空", "error"); return; }
+        int n = Math.Clamp(_batchCount, 1, 500);
+        var rand = Random.Shared;
+        _generatedTasks = Enumerable.Range(1, n)
+            .Select(i => { var st = pool[rand.Next(pool.Count)]; return new BatchTaskItem(i, st.Mark, st.StationType); })
+            .ToList();
+    }
+
+    private async Task SendBatch()
+    {
+        if (_generatedTasks.Count == 0) { ShowResp("❌ 请先随机生成任务", "error"); return; }
+        if (string.IsNullOrEmpty(_sceneName)) { ShowResp("❌ 请填写场景名称", "error"); return; }
+
+        _batchSending = true;
+        _batchTotal = _generatedTasks.Count;
+        _batchSent = 0;
+        StateHasChanged();
+
+        int okCount = 0;
+        var errors = new List<string>();
+        var batchId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+
+        foreach (var t in _generatedTasks)
+        {
+            var payload = new VehicleOrderRequest
+            {
+                CreateTime = DateTime.Now,
+                SceneName = _sceneName,
+                OrderType = "MOVE_ONLY",
+                OrderId = $"{_batchOrderIdPrefix}{batchId}_{t.No}",
+                OrderName = "wcs模拟器纯移动任务",
+                VehicleName = null,
+                Priority = _batchPriority,
+                StationCodes = [t.Mark],
+            };
+
+            var (ok, code, json) = await WcsService.SendVehicleOrderAsync(_baseUrl, payload);
+            if (ok) okCount++;
+            else if (errors.Count < 5) errors.Add($"#{t.No} {t.Mark}: HTTP {code}");
+
+            _batchSent++;
+            StateHasChanged();
+
+            if (_batchInterval > 0 && _batchSent < _batchTotal)
+                await Task.Delay(_batchInterval * 1000);
+        }
+
+        ShowResp(
+            (okCount == _batchTotal ? "✅" : "⚠️") + $" 批量下发完成：成功 {okCount}/{_batchTotal}"
+            + (errors.Count > 0 ? "\n\n失败明细（前5条）：\n" + string.Join("\n", errors) : ""),
+            okCount == _batchTotal ? "success" : "error");
+        _batchSending = false;
+    }
+
+    private static string TypeLabel(int t) => t == 0 ? "手输" : string.Join("+", MapStationTypeBits.DecodeNames(t));
+
+    private void ShowResp(string msg, string cls) { _responseText = msg; _respClass = cls; }
+}

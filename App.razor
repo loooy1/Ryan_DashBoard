@@ -1,0 +1,47 @@
+<MudThemeProvider Theme="_theme" IsDarkMode="true" />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<Router AppAssembly="@typeof(App).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+    <Found Context="routeData">
+        <RouteView RouteData="@routeData" DefaultLayout="@typeof(Layout.MainLayout)" />
+        <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+    </Found>
+</Router>
+
+@code {
+    private readonly MudTheme _theme = new()
+    {
+        PaletteDark = new PaletteDark()
+        {
+            Black = "#0f172a",
+            Background = "#0f172a",
+            Surface = "#1e293b",
+            DrawerBackground = "#0c1222",
+            DrawerText = "#e2e8f0",
+            AppbarBackground = "#0c1222",
+            AppbarText = "#e2e8f0",
+            TextPrimary = "#e2e8f0",
+            TextSecondary = "#94a3b8",
+            Primary = "#38bdf8",
+            Secondary = "#a78bfa",
+            Tertiary = "#4ade80",
+            Info = "#38bdf8",
+            Success = "#4ade80",
+            Warning = "#fb923c",
+            Error = "#f87171",
+            Dark = "#0f172a",
+            DrawerIcon = "#94a3b8",
+            ActionDefault = "#94a3b8",
+            ActionDisabled = "#475569",
+            Divider = "#1e293b",
+            DividerLight = "#334155",
+            TableLines = "#334155",
+            TableHover = "#1e293b80",
+            TextDisabled = "#475569",
+            GrayLight = "#1e293b",
+            GrayDark = "#0c1222",
+            OverlayDark = "#00000080",
+        }
+    };
+}

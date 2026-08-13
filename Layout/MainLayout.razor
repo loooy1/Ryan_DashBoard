@@ -1,0 +1,232 @@
+@inherits LayoutComponentBase
+@inject ModuleNavigationService Nav
+@inject NavigationManager NavManager
+@inject HttpClient Http
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@implements IDisposable
+
+@* ═══════════════════════════════════════════════════════
+   主布局：三列式结构，支持三层导航
+   第一列 → 功能列表（如 WCS模拟器）
+   第二列 → 项目列表（如 泰国TWD项目）
+   第三列 → 页面导航（如 任务下发 / 下发历史）
+   ═══════════════════════════════════════════════════════ *@
+
+<div class="app-layout">
+
+    @* ━━━ 第一列：主侧边栏（功能列表）━━━ *@
+    <aside class="main-sidebar @(Nav.SidebarCollapsed ? "collapsed" : "expanded")">
+        <div class="sidebar-header">
+            <span class="logo-dot"></span>
+            @* 缩回模式下只显示图标，不显示文字 *@
+            @if (!Nav.SidebarCollapsed) { <span class="logo-text">GRCS Panel</span> }
+        </div>
+
+        <div class="nav-section-title">功能</div>
+
+        @* 主页按钮：选中的功能/项目都为 null 时高亮 *@
+        <button class="nav-btn @(Nav.ActiveFeature == null && Nav.ActiveProject == null ? "active" : "")"
+                @onclick="GoHome" title="主页">
+            <span class="nav-icon">⌂</span>
+            <span class="nav-label">主页</span>
+        </button>
+
+        @* WCS模拟器入口 *@
+        <button class="nav-btn @(Nav.ActiveFeature == "wcs" ? "active" : "")"
+                @onclick="SelectWcs" title="WCS模拟器">
+            <span class="nav-icon">◈</span>
+            <span class="nav-label">WCS模拟器</span>
+        </button>
+
+        @* 以后新增功能在这里加 <button> *@
+
+        <div class="sidebar-spacer"></div>
+    </aside>
+
+    @* ━━━ 第二列：项目列表（选中功能后出现）━━━ *@
+    @if (Nav.ActiveFeature != null && Nav.ActiveProject == null)
+    {
+        <nav class="sub-sidebar">
+            <div class="sub-header">@GetFeatureTitle()</div>
+            @foreach (var proj in Nav.Projects)
+            {
+                <button class="sub-nav-btn" @onclick="() => OpenProject(proj)">
+                    <span class="nav-icon">@proj.Icon</span>
+                    @proj.Title
+                </button>
+            }
+        </nav>
+    }
+
+    @* ━━━ 第三列：页面导航（选中项目后出现，此时主侧边栏缩回）━━━ *@
+    @if (Nav.ActiveProject != null && Nav.SubNavItems.Count > 0)
+    {
+        <nav class="sub-sidebar">
+            <div class="sub-header">@GetProjectTitle()</div>
+            @foreach (var item in Nav.SubNavItems)
+            {
+                @* NavLink 自动根据当前 URL 高亮对应项 *@
+                <NavLink class="sub-nav-btn" href="@item.Href" Match="NavLinkMatch.Prefix">
+                    <span class="nav-icon">@item.Icon</span>
+                    @item.Label
+                </NavLink>
+            }
+
+            @* ━━━ 项目导航底部：连接状态区（VS Code 风格）━━━ *@
+            <div class="sidebar-status">
+                <div class="ss-card" title="WCS 后端管理接口 — http://localhost:8230">
+                    <span class="ss-dot @DotClass(_wcsOnline)"></span>
+                    <span class="ss-name">WCS 后端</span>
+                    <span class="ss-state @DotStateClass(_wcsOnline)">@DotStateText(_wcsOnline)</span>
+                    <span class="ss-port">8230</span>
+                </div>
+                <div class="ss-card" title="GRCS 后端接口 — http://localhost:8224">
+                    <span class="ss-dot @DotClass(_grcsOnline)"></span>
+                    <span class="ss-name">GRCS 后端</span>
+                    <span class="ss-state @DotStateClass(_grcsOnline)">@DotStateText(_grcsOnline)</span>
+                    <span class="ss-port">8224</span>
+                </div>
+                <div class="ss-front" title="WCS 前端当前运行地址">前端 · @NavManager.BaseUri</div>
+            </div>
+        </nav>
+    }
+
+    @* ━━━ 内容区：页面主体渲染在这里 ━━━ *@
+    <main class="content-area">
+        <div class="content-body">
+            @Body
+        </div>
+        <AutomationStatusBar />
+    </main>
+</div>
+
+@code {
+    // ── 侧边栏底部连接状态：定时探测两个后端，null=未知 / true=在线 / false=离线 ──
+    private bool? _wcsOnline;
+    private bool? _grcsOnline;
+    private System.Threading.Timer? _probeTimer;
+    private const string WcsProbeUrl = "http://localhost:8230/api/wcs/status";
+    private const string GrcsProbeUrl = "http://localhost:8224/";
+
+    // 组件初始化时订阅导航状态变化事件 + 首次探测后端连接
+    protected override async Task OnInitializedAsync()
+    {
+        await LocalStore.PreloadAsync(Js);
+
+        Nav.StateChanged += OnNavStateChanged;
+
+        await ProbeEndpoints();
+        // 每 15 秒刷新一次连接状态（端点故障时自动变红点）
+        _probeTimer = new System.Threading.Timer(async _ => await ProbeEndpoints(), null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
+    }
+
+    private async Task ProbeEndpoints()
+    {
+        _wcsOnline = await Probe(WcsProbeUrl);
+        _grcsOnline = await Probe(GrcsProbeUrl);
+        StateHasChanged();
+    }
+
+    /// <summary>探测一个端点：能建立 HTTP 连接（拿到任何状态码）就算在线。</summary>
+    private async Task<bool?> Probe(string url)
+    {
+        try
+        {
+            using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string DotClass(bool? online) => online switch
+    {
+        true => "on",
+        false => "off",
+        null => ""
+    };
+
+    private static string DotStateText(bool? online) => online switch
+    {
+        true => "在线",
+        false => "离线",
+        null => "检测中"
+    };
+
+    private static string DotStateClass(bool? online) => online switch
+    {
+        true => "on",
+        false => "off",
+        null => "probe"
+    };
+
+    // 导航状态变了就重绘整个布局
+    private void OnNavStateChanged() => StateHasChanged();
+
+    // ── 第一层 → 第二层：选中 WCS模拟器，显示项目列表 ──
+    private void SelectWcs()
+    {
+        Nav.SelectFeature("wcs", new List<ProjectDef>
+        {
+            new("thailand-twd", "泰国TWD项目", "📁"),
+            // 新增项目在这里加
+        });
+    }
+
+    // ── 第二层 → 第三层：选中项目 → 侧边栏缩回 + 显示页面导航 ──
+    private void OpenProject(ProjectDef proj)
+    {
+        switch (proj.Id)
+        {
+            case "thailand-twd":
+                Nav.SelectProject("thailand-twd", new List<SubNavItem>
+                {
+                    new("地图信息", "wcs-simulator/map-reader", "🗺️"),
+                    new("库存管理", "wcs-simulator/inventory", "📦"),
+                    new("容器任务下发", "wcs-simulator/dispatch", "📤"),
+                    new("移动任务下发", "wcs-simulator/vehicle-dispatch", "🚚"),
+                    new("自动化任务", "wcs-simulator/automation", "🤖"),
+                    new("任务看板", "wcs-simulator/task-stages", "📊"),
+                    new("信号交互", "wcs-simulator/signal-interaction", "📶"),
+                    new("任务下发历史", "wcs-simulator/history", "📋"),
+                });
+                // 同时跳转到该项目的默认页面
+                NavManager.NavigateTo("wcs-simulator/dispatch");
+                break;
+
+            // 新增项目的 case 在这里加
+        }
+    }
+
+    // 回到主页：清空所有选中状态，侧边栏展开
+    private void GoHome()
+    {
+        Nav.GoHome();
+        NavManager.NavigateTo("/");
+    }
+
+    // 根据功能 ID 返回中文标题
+    private string GetFeatureTitle() => Nav.ActiveFeature switch
+    {
+        "wcs" => "WCS模拟器",
+        _ => ""
+    };
+
+    // 根据项目 ID 返回中文标题
+    private string GetProjectTitle() => Nav.ActiveProject switch
+    {
+        "thailand-twd" => "泰国TWD项目",
+        _ => ""
+    };
+
+    // 组件销毁时取消订阅并停止探测定时器，防止内存泄漏
+    public void Dispose()
+    {
+        Nav.StateChanged -= OnNavStateChanged;
+        _probeTimer?.Dispose();
+        _probeTimer = null;
+    }
+}

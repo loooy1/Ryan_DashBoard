@@ -1,0 +1,347 @@
+@page "/wcs-simulator/vehicle-dispatch"
+@inject IWcsService WcsService
+@inject IJSRuntime Js
+@inject LocalStoreService LocalStore
+@using System.Text.Json
+
+<PageTitle>车辆移动</PageTitle>
+
+@* ════════════════════════════════════════════════
+   连接设置：配置 GRCS 后端地址和场景名
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
+        🔌 连接设置
+        <span class="addr-badge">GRCS @_baseUrl</span>
+        <span class="collapse-arrow">@(IsCollapsed("conn") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("conn"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>服务器地址</label>
+            <input type="text" @bind="_baseUrl" placeholder="http://localhost:8224">
+        </div>
+        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
+            <label>场景名称</label>
+            <input type="text" @bind="_sceneName" placeholder="Show">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:200px;">
+            <label>下发时间</label>
+            <input type="text" @bind="_createTime" placeholder="yyyy-MM-ddTHH:mm:ss">
+        </div>
+    </div>
+    <div class="hint-text">⚠️ 车辆任务走 GRCS 运力调度接口 <code>POST /api/RawOrder/ChangeFloor</code>，不是 WCS 协议 task_receive</div>
+    @if (_mapStations.Count > 0)
+    {
+        <div class="hint-text" style="color:#4ade80;">
+            🗺️ 已使用地图数据：@_mapStations.Count 个站点（保存于 @_mapSavedAt）——站点输入框可直接下拉选择
+        </div>
+    }
+    else
+    {
+        <div class="hint-text" style="color:#fbbf24;">
+            ⚠️ 未找到地图数据，请先在「地图信息」页读取 map.json（站点数据保存在浏览器中）
+        </div>
+    }
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   编辑任务：任务信息 + 目标站点
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleEdit" title="点击折叠/展开">
+        📝 编辑任务
+        <span class="badge-selected">MOVE_ONLY 纯移动</span>
+        <span class="collapse-arrow">@(IsCollapsed("edit") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("edit"))
+    {
+
+    <div class="hint-text">
+        MOVE_ONLY 支持多站点，车辆将按顺序依次前往每个目标站点执行纯移动任务。<br/>
+        不指定车辆时由调度器自动匹配空闲车辆；优先级 ≤10 时转为停车待命（Standby）。
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;">
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>任务 ID</label>
+            <input type="text" @bind="_orderId" readonly>
+        </div>
+        <div class="form-group" style="flex:1;min-width:120px;max-width:200px;">
+            <label>任务名称</label>
+            <input type="text" @bind="_orderName" placeholder="可选">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>指定车辆</label>
+            <input type="text" @bind="_vehicleName" placeholder="不填=自动分配">
+        </div>
+        <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
+            <label>优先级 (0-1000)</label>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <input type="range" min="0" max="1000" step="10" @bind="_priority" style="flex:1;">
+                <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_priority</span>
+            </div>
+        </div>
+    </div>
+    <div class="hint-text" style="margin-top:4px;">留空车辆=自动分配；优先级 ≤10 = Standby（停车待命）</div>
+
+    <div style="border-top:1px solid #334155;margin:14px 0;padding-top:14px;"></div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+        <span style="font-weight:600;font-size:0.85rem;">目标站点</span>
+        <button class="btn btn-primary btn-sm" @onclick="AddStation">+ 添加站点</button>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:8px;">
+        @for (int j = 0; j < _stations.Count; j++)
+        {
+            var sj = j;
+            <div style="display:flex;gap:8px;align-items:center;">
+                <span class="station-label">站点 @(sj+1)</span>
+
+                <div style="position:relative;flex:1;display:flex;min-width:0;">
+                    <input type="text" value="@_stations[sj]"
+                           @oninput="(e) => OnStationInput(sj, e)"
+                           @onfocus="() => OpenPicker(sj)"
+                           placeholder="输入搜索 / 选择站点编码"
+                           style="flex:1;border-top-right-radius:0;border-bottom-right-radius:0;min-width:0;">
+                    <button type="button" class="picker-toggle" @onclick="() => TogglePicker(sj)" title="选择站点">▾</button>
+
+                    @if (_openPicker == sj)
+                    {
+                        <div class="picker-overlay" @onclick="ClosePicker"></div>
+                        <div class="picker-panel">
+                            <div class="picker-list">
+                                @if (string.IsNullOrWhiteSpace(_stations[sj]))
+                                {
+                                    <div class="hint-text" style="padding:8px;">请输入关键词搜索站点</div>
+                                }
+                                else
+                                {
+                                    @foreach (var st in PickerResults(sj))
+                                    {
+                                        <div class="picker-item" @onclick="() => PickStation(sj, st)">
+                                            <span class="picker-mark">@st.Mark</span>
+                                            <span class="picker-type">@string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))</span>
+                                        </div>
+                                    }
+                                    @if (PickerResults(sj).Count == 0)
+                                    {
+                                        <div class="hint-text" style="padding:8px;">无匹配站点</div>
+                                    }
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                @if (_stations.Count > 1)
+                {
+                    <button class="btn btn-danger btn-xs" @onclick="() => RemoveStation(sj)">✕</button>
+                }
+            </div>
+        }
+    </div>
+
+    @* 操作按钮行 *@
+    <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap;">
+        <button class="btn btn-primary" @onclick="SendVehicleOrder" disabled="@_sending">
+            @(_sending ? "⏳ 发送中..." : "🚚 下发车辆任务")
+        </button>
+        <button class="btn btn-outline" @onclick="ResetForm">🔄 重置</button>
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   响应结果面板：显示 GRCS 后端返回的 JSON
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleResp" title="点击折叠/展开">
+        📨 响应结果
+        <span class="collapse-arrow">@(IsCollapsed("resp") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("resp"))
+    {
+    <div class="response-panel @_respClass">@_responseText</div>
+    }
+</div>
+
+@code {
+    // ── 表单字段 ──
+    private string _baseUrl = "http://localhost:8224";    // GRCS 服务器地址
+    private string _sceneName = "";                        // 场景名称
+    private string _createTime = "";                       // 下发时间
+    private const string _orderType = "MOVE_ONLY";         // 任务类型（固定纯移动）
+    private string _orderId = "";                          // 任务 ID
+    private string _orderName = "";                        // 任务名称
+    private string _vehicleName = "";                      // 指定车辆（可选）
+    private int _priority = 50;                             // 优先级
+    private List<string> _stations = [""];                 // 站点列表
+    private bool _sending;                                  // 发送中标志
+    private string _responseText = "等待发送任务...";       // 响应面板文字
+    private string _respClass = "";                        // 响应面板样式
+
+    // ── 地图站点缓存（地图信息页保存到浏览器的数据）──
+    private List<MapStationLite> _mapStations = [];        // 地图站点（用于下拉候选）
+    private string _mapSavedAt = "";                       // 地图数据保存时间
+
+    // ── 站点选择器状态 ──
+    private int _openPicker = -1;                          // 当前展开的站点选择器行（-1=无）
+
+    // ── 卡片折叠状态（持久化到浏览器，切走再回来保持）──
+    private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["edit"] = true, ["resp"] = true };
+    private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
+    private async Task Toggle(string key)
+    {
+        _collapsed[key] = !IsCollapsed(key);
+        await LocalStore.SetAsync(Js, "grcs_vehicle_collapsed", JsonSerializer.Serialize(_collapsed));
+    }
+    private Task ToggleConn() => Toggle("conn");
+    private Task ToggleEdit() => Toggle("edit");
+    private Task ToggleResp() => Toggle("resp");
+
+    /// <summary>选择器候选项：启用的站点，用该行输入框当前内容过滤（输入框即搜索框）。</summary>
+    private List<MapStationLite> PickerResults(int idx)
+    {
+        var keyword = idx >= 0 && idx < _stations.Count ? _stations[idx] : "";
+        return _mapStations
+            .Where(s => s.StaEnable)
+            .Where(s => keyword == ""
+                || s.Mark.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || MapStationTypeBits.DecodeNames(s.StationType).Any(n => n.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+    }
+
+    /// <summary>输入框内容变化：更新值并展开下拉实时过滤。</summary>
+    private void OnStationInput(int idx, ChangeEventArgs e)
+    {
+        _stations[idx] = e.Value?.ToString() ?? "";
+        if (_openPicker != idx) _openPicker = idx;
+    }
+
+    private void OpenPicker(int idx) => _openPicker = idx;
+
+    private void TogglePicker(int idx) => _openPicker = _openPicker == idx ? -1 : idx;
+
+    private void ClosePicker() => _openPicker = -1;
+
+    private void PickStation(int idx, MapStationLite st)
+    {
+        _stations[idx] = st.Mark;
+        _openPicker = -1;
+    }
+
+    private static readonly JsonSerializerOptions MapJsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    // 页面初始化：生成任务 ID 和时间，读取浏览器中的地图站点缓存
+    protected override async Task OnInitializedAsync()
+    {
+        _orderId = "MV_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+        _createTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+
+        // 读取共享配置（内存缓存，同步读取）
+        try
+        {
+            var wh = LocalStore["grcs_warehouse"];
+            if (!string.IsNullOrEmpty(wh) && wh != "null") _sceneName = wh;
+            var grcs = LocalStore["grcs_grcs_url"];
+            if (!string.IsNullOrEmpty(grcs) && grcs != "null") _baseUrl = grcs;
+        }
+        catch { }
+
+        try
+        {
+            var json = LocalStore["grcs_map_stations"];
+            if (!string.IsNullOrEmpty(json) && json != "null")
+            {
+                var cache = JsonSerializer.Deserialize<MapStationCache>(json, MapJsonOpts);
+                if (cache != null)
+                {
+                    _mapStations = cache.Stations;
+                    _mapSavedAt = cache.SavedAt;
+                }
+            }
+        }
+        catch { /* 读取地图缓存失败时忽略，仅影响下拉候选 */ }
+
+        // 恢复卡片折叠状态（内存缓存，同步读取）
+        try
+        {
+            var cjson = LocalStore["grcs_vehicle_collapsed"];
+            if (!string.IsNullOrEmpty(cjson) && cjson != "null")
+                _collapsed = JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson, MapJsonOpts) ?? _collapsed;
+        }
+        catch { /* 折叠状态读取失败时使用默认（全部折叠） */ }
+    }
+
+    private void AddStation() => _stations.Add("");
+
+    private void RemoveStation(int i) => _stations.RemoveAt(i);
+
+    /// <summary>收集表单、POST 到 GRCS 的 /api/RawOrder/ChangeFloor。</summary>
+    private async Task SendVehicleOrder()
+    {
+        // ── 前端校验 ──
+        if (string.IsNullOrEmpty(_baseUrl)) { ShowResp("❌ 请填写服务器地址", "error"); return; }
+        if (string.IsNullOrEmpty(_sceneName)) { ShowResp("❌ 请填写场景名称", "error"); return; }
+        if (string.IsNullOrEmpty(_orderId)) { ShowResp("❌ 任务 ID 为空", "error"); return; }
+
+        var stations = _stations.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        if (stations.Count == 0) { ShowResp("❌ 请至少填写一个站点", "error"); return; }
+
+        // 有地图数据时校验站点必须精确存在
+        if (_mapStations.Count > 0)
+        {
+            var missing = stations
+                .Where(m => !_mapStations.Any(s => s.Mark.Equals(m, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            if (missing.Count > 0)
+            {
+                ShowResp($"❌ 站点不在地图数据中：{string.Join(", ", missing)}", "error"); return;
+            }
+        }
+
+        // ── 构建请求体 ──
+        var payload = new VehicleOrderRequest
+        {
+            CreateTime = DateTime.TryParse(_createTime, out var dt) ? dt : DateTime.Now,
+            SceneName = _sceneName,
+            OrderType = _orderType,
+            OrderId = _orderId,
+            OrderName = _orderName,
+            VehicleName = string.IsNullOrWhiteSpace(_vehicleName) ? null : _vehicleName.Trim(),
+            Priority = _priority,
+            StationCodes = stations
+        };
+
+        // ── 发送 HTTP 请求 ──
+        _sending = true;
+        StateHasChanged();
+
+        var (ok, code, json) = await WcsService.SendVehicleOrderAsync(_baseUrl, payload);
+        ShowResp((ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}", ok ? "success" : "error");
+
+        _sending = false;
+    }
+
+    private void ShowResp(string msg, string cls)
+    {
+        _responseText = msg;
+        _respClass = cls;
+    }
+
+    /// <summary>重置整个表单。</summary>
+    private void ResetForm()
+    {
+        _orderId = "MV_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+        _createTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+        _orderName = "";
+        _vehicleName = "";
+        _priority = 50;
+        _stations = [""];
+        ShowResp("等待发送任务...", "");
+    }
+}
