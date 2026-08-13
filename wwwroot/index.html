@@ -19,6 +19,18 @@
         <a class="dismiss">🗙</a>
     </div>
     <script>
+        // ────────────────────────────────────────────────────────────────
+        // JS 桥层（Blazor WASM ↔ localStorage / 浏览器能力）
+        //
+        // 为什么把持久化放这里：WASM 的 IJSRuntime 调用是异步且带序列化开销的，
+        // C# 侧用 LocalStoreService 预加载小 key 进内存、TaskLedgerService 缓存大台账，
+        // 全部通过本文件暴露的 window.grcs* 函数读写 localStorage。
+        //
+        // 跨标签页同步：本标签页写 localStorage 不会触发自己的 storage 事件，
+        // 其他标签页的写入才会触发——所以"写方即时更新内存缓存、读方靠 storage
+        // 事件刷新"这套组合恰好无死循环。storage 事件的 key 为 null 表示其他
+        // 标签页被关闭，各监听器需忽略。
+        // ────────────────────────────────────────────────────────────────
         // localStorage helpers for WCS task ledger（唯一数据源，取代 history）
         const HISTORY_KEY = 'grcs_wcs_history';
         const TASK_LEDGER_KEY = 'grcs_task_ledger';

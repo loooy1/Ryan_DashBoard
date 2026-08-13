@@ -1,5 +1,10 @@
 @page "/"
 
+@* ════════════════════════════════════════════════
+   主页：欢迎说明 + 快捷入口
+   ── 说明 ── 三列导航（功能 → 项目 → 页面）由 MainLayout.razor
+   渲染，本页是路由 "/" 的落地页，快捷按钮直接跳转到任务下发页
+   ════════════════════════════════════════════════ *@
 <PageTitle>GRCS 控制面板</PageTitle>
 
 <div class="section-card">
@@ -16,6 +21,9 @@
 </div>
 
 @code {
+    // 导航管理器：属性注入（可直接使用默认值占位的写法）
     [Inject] private NavigationManager Nav { get; set; } = default!;
+
+    /// <summary>跳转到 WCS 模拟器任务下发页（与左侧导航打开项目后的默认页一致）。</summary>
     private void GoToWcs() => Nav.NavigateTo("/wcs-simulator/dispatch");
 }

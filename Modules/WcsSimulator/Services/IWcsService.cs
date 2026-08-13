@@ -22,9 +22,10 @@ public interface IWcsService
 
     // ── 库存查询 ──
 
-    /// <summary>查询容器库存（GET /api/Cargo，支持按容器编码 / 场景 / 锁定状态过滤）。</summary>
+    /// <summary>查询容器库存（GET /api/Cargo，支持按容器编码 / 场景 / 锁定状态过滤 + 分页）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> QueryCargoInventoryAsync(
-        string baseUrl, string? code = null, string? scene = null, string? locked = null);
+        string baseUrl, string? code = null, string? scene = null, string? locked = null,
+        int pageNo = 1, int pageSize = 2000);
 
     /// <summary>删除容器库存（DELETE /api/Cargo/{id}）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> DeleteCargoAsync(string baseUrl, int id);
@@ -49,8 +50,8 @@ public interface IWcsService
 
     // ── 任务阶段（WCS 后端管理接口 /api/wcs）──
 
-    /// <summary>查询任务阶段变化事件列表（GET /api/wcs/task-stages）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> GetTaskStageEventsAsync(string baseUrl);
+    /// <summary>查询任务阶段变化事件列表（GET /api/wcs/task-stages；sinceId&gt;0 时仅返回 Id 更大的增量事件）。</summary>
+    Task<(bool Ok, int StatusCode, string Json)> GetTaskStageEventsAsync(string baseUrl, long sinceId = 0);
 
     /// <summary>删除指定任务的所有阶段事件（DELETE /api/wcs/task-stages/{taskId}）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> DeleteTaskStageAsync(string baseUrl, string taskId);

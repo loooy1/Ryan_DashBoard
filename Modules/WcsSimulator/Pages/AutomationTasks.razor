@@ -10,10 +10,24 @@
 @using System.Text.Json
 @using GRCS.Dashboard.Modules.WcsSimulator.Models
 
+@* ════════════════════════════════════════════════
+   页面职责：WCS 模拟器的「自动化任务」页，三个独立功能区块
+   ① 批量移动任务下发：从地图缓存按来源（手输 / 类型+楼层）筛选候选池，
+      随机生成一批 MOVE_ONLY 任务并逐条 POST 到 GRCS /api/RawOrder/ChangeFloor
+   ② 自动容器任务下发：执行状态托管到单例服务 ContainerTaskService，
+      两段式任务编排在服务内部完成，切换模块不中断
+   ③ 自动化轮询储位：运行状态托管到单例服务 AutoRunService，
+      页面仅订阅 Changed 事件刷新，日志与计数跨导航存活
+   ── 交互服务 ──
+   IWcsService：向 GRCS 下发车辆任务（ChangeFloor）
+   ContainerTaskService / AutoRunService：跨页面存活的后台执行服务
+   LocalStoreService：配置与折叠状态持久化到浏览器 localStorage
+   ════════════════════════════════════════════════ *@
 <PageTitle>自动化任务</PageTitle>
 
 @* ════════════════════════════════════════════════
-   连接设置
+   连接设置：GRCS 地址与场景名称在页面初始化时从共享 localStorage 键
+   （grcs_grcs_url / grcs_warehouse）恢复，修改后随表单绑定立即生效
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
@@ -38,6 +52,9 @@
 
 @* ════════════════════════════════════════════════
    批量移动任务下发
+   ── 流程 ── 确定站点来源（手输 / 按类型+楼层筛选）→ 计算候选池
+   （_batchPool）→ 随机生成任务预览 → SendBatch 逐条 POST
+   GRCS /api/RawOrder/ChangeFloor，按 _batchInterval 秒节流
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleBatch" title="点击折叠/展开">
@@ -168,6 +185,9 @@
 
 @* ════════════════════════════════════════════════
    自动容器任务下发（状态托管到 ContainerTaskService，切模块不中断）
+   ── 说明 ── 两段式自动任务（入库段1+段2 / 出库段1+段2 / 分拣）由
+   ContainerTaskService 按场景编排下发；库存缓存与执行日志保存在服务内，
+   本页通过 Container.Changed 事件订阅刷新，切走再回来仍然可见
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleContainer" title="点击折叠/展开">
@@ -237,6 +257,10 @@
 
 @* ════════════════════════════════════════════════
    自动化（轮询储位自动下发）
+   ── 说明 ── AutoRunService 按 Interval 秒轮询储位：发现空托 → 下发入库，
+   带货托按 FlowMode（出库/分拣交替、只分拣、只出库）下发；
+   任务完成后自动解除占用，下轮可再次发现。运行状态与日志在服务内，
+   页面通过 Auto.Changed 事件订阅刷新
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleAutoSection" title="点击折叠/展开">
@@ -289,7 +313,7 @@
 </div>
 
 @* ════════════════════════════════════════════════
-   响应结果
+   响应结果：显示最近一次 HTTP 交互的结果与响应 JSON（ShowResp 写入，不持久化）
    ════════════════════════════════════════════════ *@
 @if (!string.IsNullOrEmpty(_responseText))
 {
@@ -300,14 +324,15 @@
 
 @code {
     // ── 连接设置 ──
-    private string _baseUrl = "http://localhost:8224";
-    private string _wcsBaseUrl = "http://localhost:8230"; // task-stages 阶段事件源（与信号交互页一致）
-    private string _sceneName = "";
+    private string _baseUrl = "http://localhost:8224";    // GRCS 地址（车辆任务下发目标）
+    private string _wcsBaseUrl = "http://localhost:8230"; // WCS 后端：task-stages 阶段事件源（与信号交互页一致）
+    private string _sceneName = "";                       // 场景名称（共享键 grcs_warehouse）
 
-    // ── 地图站点缓存 ──
+    // ── 地图站点缓存（从「地图信息」页写入的 localStorage 键 grcs_map_stations 恢复，
+    //    供按类型筛选候选池与手输站点校验使用）──
     private List<MapStationLite> _mapStations = [];
 
-    // ── 批量参数 ──
+    // ── 批量参数（GenerateBatch 生成预览列表 _generatedTasks，SendBatch 逐条下发）──
     private string _batchSource = "manual";
     private string _batchManualSites = "";
     private int _batchTypeFilter;
@@ -325,9 +350,10 @@
     private string _responseText = "";
     private string _respClass = "";
 
+    // 批量任务预览行：序号 / 站点编码 / 站点类型位掩码（仅预览用，下发时重新组装请求体）
     private record BatchTaskItem(int No, string Mark, int StationType);
 
-    // ── 折叠 ──
+    // ── 卡片折叠状态（持久化到 localStorage 键 grcs_auto_collapsed）──
     private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["batch"] = true, ["container"] = true, ["auto"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
@@ -340,9 +366,11 @@
     private Task ToggleContainer() => Toggle("container");
     private Task ToggleAutoSection() => Toggle("auto");
 
-    // ── 自动化（运行状态/日志在 AutoRunService 中，跨导航存活；页面只订阅刷新） ──
+    // ── 自动化（运行状态/日志在 AutoRunService 单例中，跨导航存活；页面只订阅刷新。
+    //    服务内部定时器自己管理生命周期，页面销毁时退订 Changed 事件即可）──
     private void OnAutoChanged() => InvokeAsync(StateHasChanged);
     private void OnContainerChanged() => InvokeAsync(StateHasChanged);
+    /// <summary>退订两个后台服务的状态变化事件，避免组件销毁后回调泄漏。</summary>
     public void Dispose() { Auto.Changed -= OnAutoChanged; Container.Changed -= OnContainerChanged; }
     private Task ToggleAuto() => Auto.ToggleAsync();
     private void ClearAutoLogs() => Auto.ClearLogs();
@@ -352,6 +380,7 @@
     private int _containerCount = 3;
     private int _containerInterval = 3;
 
+    /// <summary>查询 GRCS 库存并缓存到 ContainerTaskService（空托/带货托/货物/配对货计数）。</summary>
     private async Task RefreshContainerInventory()
     {
         await Container.RefreshInventoryAsync();
@@ -359,6 +388,7 @@
 
     private void ClearContainerLogs() => Container.ClearLogs();
 
+    /// <summary>触发 ContainerTaskService 按所选流程执行两段式容器任务，结果回显到响应面板。</summary>
     private async Task ExecuteContainerAuto()
     {
         var result = await Container.ExecuteAsync(_containerFlow, _containerCount, _containerInterval);
@@ -370,6 +400,8 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // 订阅两个后台服务的状态变化事件：服务状态在单例内变化时通知本页重绘，
+        // 页面销毁时在 Dispose 退订，防止泄漏
         Auto.Changed += OnAutoChanged;     // 订阅自动化状态变化（页面销毁时在 Dispose 退订）
         Container.Changed += OnContainerChanged; // 订阅容器任务状态变化
         // 读取共享配置（内存缓存，同步读取）
@@ -404,10 +436,17 @@
         catch { }
     }
 
+    // 手输站点文本解析：支持中英文逗号/分号/空白/换行分隔，去重保留顺序
     private List<string> _manualSites => _batchManualSites
         .Split([',', '，', ';', '；', ' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .Distinct().ToList();
 
+    /// <summary>
+    /// 批量下发候选池：按来源模式计算
+    /// - 手输：文本解析出的站点，若已加载地图数据则用地图站点（大小写不敏感匹配）
+    /// - 按类型：启用站点中 StationType 位掩码包含全部所选类型位者
+    /// 最后统一按楼层过滤（0=全部楼层）
+    /// </summary>
     private List<MapStationLite> _batchPool
     {
         get
@@ -435,14 +474,17 @@
         }
     }
 
+    // 切换站点来源/类型位：切换后清空已生成的预览，强制重新生成
     private void SetBatchSourceManual() { _batchSource = "manual"; _batchFloorFilter = 0; _generatedTasks.Clear(); }
     private void SetBatchSourceType() { _batchSource = "type"; _batchFloorFilter = 0; _batchTypeFilter = 0; _generatedTasks.Clear(); }
     private void ToggleBatchType(int bit) { _batchTypeFilter ^= bit; _generatedTasks.Clear(); }
+    // 可选楼层列表：启用且符合当前类型筛选的站点所在楼层去重排序
     private List<int> _availableFloors => _mapStations
         .Where(s => s.StaEnable && (_batchTypeFilter == 0 || (s.StationType & _batchTypeFilter) == _batchTypeFilter))
         .Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
     private void ClearBatch() => _generatedTasks.Clear();
 
+    /// <summary>从候选池随机抽取 _batchCount 个站点生成任务预览（尚未下发，可反复重新生成）。</summary>
     private void GenerateBatch()
     {
         var pool = _batchPool;
@@ -454,6 +496,12 @@
             .ToList();
     }
 
+    /// <summary>
+    /// 批量下发流程：同一批次共用 batchId 后缀拼接 OrderId（便于整批识别），
+    /// 逐条 POST GRCS /api/RawOrder/ChangeFloor（经 WcsService.SendVehicleOrderAsync），
+    /// 每条之间按 _batchInterval 秒节流，进度经 _batchSent/_batchTotal 回显，
+    /// 失败只记录前 5 条明细。
+    /// </summary>
     private async Task SendBatch()
     {
         if (_generatedTasks.Count == 0) { ShowResp("❌ 请先随机生成任务", "error"); return; }
@@ -466,6 +514,7 @@
 
         int okCount = 0;
         var errors = new List<string>();
+        // 批次 ID：同一批任务的 OrderId 共用此后缀，历史里可按前缀整批识别
         var batchId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
 
         foreach (var t in _generatedTasks)
@@ -500,7 +549,9 @@
         _batchSending = false;
     }
 
+    /// <summary>站点类型位掩码 → 中文类型名（多类型用 + 连接；0=手输站点无类型）。</summary>
     private static string TypeLabel(int t) => t == 0 ? "手输" : string.Join("+", MapStationTypeBits.DecodeNames(t));
 
+    /// <summary>把最近一次 HTTP 交互结果写入响应面板。</summary>
     private void ShowResp(string msg, string cls) { _responseText = msg; _respClass = cls; }
 }

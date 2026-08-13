@@ -5,8 +5,20 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// localStorage 内存缓存层（scoped = per-browser-tab singleton）。
-/// App 启动时一次性加载所有 key 到内存，之后所有读操作同步返回（0ms，无 JS 边界），
-/// 写操作双写内存 + localStorage。
+///
+/// ── 为什么需要它 ──
+/// Blazor WASM 每次读 localStorage 都要跨 JS interop 边界（异步 + 序列化开销）。
+/// 本服务在 App 启动时把常用小 key 一次性批量加载进内存，之后所有读操作同步返回
+/// （0ms、0 次 JS 边界）；写操作双写：内存立即更新（同步可见）+ localStorage 异步持久化。
+///
+/// ── 边界 ──
+/// 只预加载配置/开关/折叠状态等小 key；台账（grcs_task_ledger，上限 2000 条大 JSON）
+/// 和地图缓存（grcs_map_stations）等大 key 由各自服务（TaskLedgerService 等）独立缓存，
+/// 避免启动时一次性反序列化大对象。新增持久化 key 时想清楚它属于哪一类。
+///
+/// ── 跨标签页 ──
+/// 本服务的缓存是标签页内快照；其他标签页的写入通过 storage 事件桥（index.html 的
+/// grcsRegisterStorageListener）通知各页面按需重读对应 key。
 /// </summary>
 public class LocalStoreService
 {

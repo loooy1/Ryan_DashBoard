@@ -6,10 +6,18 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 任务台账内存缓存（scoped = per-browser-tab singleton）。
-/// 台账 grcs_task_ledger 是唯一数据源但体积大（上限 2000 条），不适合放入 LocalStoreService 预加载。
-/// 本服务首读时从 localStorage 拉一次并缓存，之后所有读都是内存操作（0 次 JS 边界 + 0 次 JSON 反序列化）；
-/// 本标签页所有写入走 AppendAsync 同步更新缓存并写穿 localStorage（JS 端负责旧 history 迁移与 2000 上限合并）。
-/// 信号轮询、页面刷新不再每次全量加载台账。
+///
+/// ── 数据流 ──
+/// 台账 grcs_task_ledger 是任务下发记录的唯一数据源（取代旧的 grcs_wcs_history），
+/// 体积大（上限 2000 条），不适合放进 LocalStoreService 预加载。本服务首读时从
+/// localStorage 拉一次并缓存，之后所有读都是内存操作（0 次 JS 边界 + 0 次 JSON 反序列化）；
+/// 本标签页所有写入走 AppendAsync 同步更新缓存并写穿 localStorage
+/// （JS 端 grcsSaveHistory 负责旧 history 迁移与 2000 上限合并）。
+///
+/// ── 跨标签页可见性 ──
+/// JS 端维护 __ledgerVersion 版本号：其他标签页写入台账时（storage 事件）版本 +1，
+/// GetAsync 每次用一次轻量 JS interop 读版本号，发现变化才重读全量台账——
+/// 避免信号轮询、页面刷新每次全量加载。
 /// </summary>
 public class TaskLedgerService
 {

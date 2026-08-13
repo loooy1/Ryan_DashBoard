@@ -5,10 +5,26 @@
 @inject TaskLedgerService Ledger
 @implements IDisposable
 
+@* ════════════════════════════════════════════════
+   页面职责：WCS 模拟器的「接驳位信号交互」页
+   ── 数据流 ──
+   ① 进入申请：GRCS 下发 station_entry_request → WCS 后端管理接口暂存为
+      Pending 事件 → 本页轮询拉取并展示 → 人工/自动批准或拒绝
+   ② 货物到达：从任务台账（TaskLedgerService）读取 CARGO_CARRY_INBOUND
+      任务生成确认卡片 → POST container_ready 通知 GRCS 货物已就位
+   ③ 货物移除：从任务台账读取 CARGO_CARRY_OUTBOUND 任务生成确认卡片
+      → POST container_remove 通知 GRCS 出库容器已移除
+   ── 交互服务 ──
+   IWcsService：查询/裁决 WCS 后端管理接口 + 向 GRCS 发送容器通知
+   TaskLedgerService：任务台账（下发页面写入的唯一数据源）
+   LocalStoreService：所有配置与确认状态都持久化到浏览器 localStorage
+   ════════════════════════════════════════════════ *@
 <PageTitle>接驳位信号交互</PageTitle>
 
 @* ════════════════════════════════════════════════
-   连接设置：WCS 后端管理接口地址
+   连接设置：WCS 后端管理接口地址 + GRCS 通知目标地址
+   ── 说明 ── 初始化时从共享 localStorage 键（grcs_wcs_url /
+   grcs_grcs_url）恢复；轮询间隔决定下方轮询定时器的刷新频率
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
@@ -42,6 +58,9 @@
 
 @* ════════════════════════════════════════════════
    进入申请：模式切换 + 事件列表
+   ── 数据流 ── GRCS 每 ~2 秒重发一次 station_entry_request，WCS 后端
+      管理接口把未裁决的请求聚合成事件列表；本页以轮询定时器拉取，
+      批准/拒绝结果写回 WCS 后端，由后端通知 GRCS 放行或拒绝
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
@@ -117,6 +136,9 @@
 
 @* ════════════════════════════════════════════════
    货物到达：模式切换 + 事件列表
+   ── 数据流 ── 台账中每出现一条 CARGO_CARRY_INBOUND（入库段2）任务
+      即生成一张到达卡片；确认后向 GRCS POST container_ready 通知。
+      已确认的 TaskId 持久化，页面刷新后不会重复发送
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleArrivalList" title="点击折叠/展开">
@@ -182,6 +204,9 @@
 
 @* ════════════════════════════════════════════════
    货物移除：模式切换 + 事件列表
+   ── 数据流 ── 台账中每出现一条 CARGO_CARRY_OUTBOUND（出库段1）任务
+      即生成一张移除卡片；确认后向 GRCS POST container_remove 通知。
+      已确认的 TaskId 持久化，页面刷新后不会重复发送
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleRemovalList" title="点击折叠/展开">
@@ -246,7 +271,8 @@
 </div>
 
 @* ════════════════════════════════════════════════
-   最近操作反馈
+   最近操作反馈：显示上一次 HTTP 交互的结果（成功 ✅ / 失败 ❌
+   及响应 JSON），由 ShowFeedback 写入，不持久化
    ════════════════════════════════════════════════ *@
 @if (!string.IsNullOrEmpty(_feedback))
 {
@@ -271,21 +297,23 @@
     private bool _autoMode;                                // 后端当前模式
     private int _pendingCount;                             // 待确认数
     private List<EntryRequestEvent> _events = [];          // 事件列表
-    private System.Threading.Timer? _timer;                // 轮询定时器
+    private System.Threading.Timer? _timer;                // 轮询定时器：GRCS 每 ~2 秒重发一次申请，
+                                                           // 前端按 _pollSeconds 周期同步状态/事件/卡片；
+                                                           // 回调跑在线程池线程，组件销毁时在 Dispose 停止
 
     // ── 货物到达通知（container_ready）──
     private string _grcsUrl = "http://localhost:8224";     // GRCS 地址（container_ready 目标）
     private string _grcsApiVersion = "1.0";                // API 版本
     private bool _arrivalAuto;                             // 自动全确认模式
     private List<ArrivalCard> _arrivalCards = [];          // 到达卡片（从历史任务生成）
-    private HashSet<string> _confirmedTasks = [];          // 已确认 TaskId（持久化）
+    private HashSet<string> _confirmedTasks = [];          // 已确认 TaskId（持久化到 grcs_arrival_confirmed）
     private bool _arrivalBusy;                             // 到达操作中标志
     private int _pendingArrival;                           // 待确认卡片数
 
     // ── 货物移除通知（container_remove）──
     private bool _removalAuto;                             // 自动全确认模式
     private List<RemovalCard> _removalCards = [];          // 移除卡片（从历史任务生成）
-    private HashSet<string> _confirmedRemovalTasks = [];   // 已确认 TaskId（持久化）
+    private HashSet<string> _confirmedRemovalTasks = [];   // 已确认 TaskId（持久化到 grcs_removal_confirmed）
     private bool _removalBusy;                             // 移除操作中标志
     private int _pendingRemoval;                           // 待确认卡片数
 
@@ -293,7 +321,9 @@
     private string _feedback = "";
     private string _feedbackClass = "";
 
-    // ── 卡片折叠状态（持久化）──
+    // ── 卡片折叠状态（持久化到 localStorage 键 grcs_adm_collapsed，JSON 字典：
+    //    key=区块标识（adm_conn/adm_list/adm_arrival/adm_removal），value=是否折叠；
+    //    每次切换区块立即写回，切走再回来保持）──
     private Dictionary<string, bool> _collapsed = new() { ["adm_conn"] = true, ["adm_list"] = true, ["adm_arrival"] = true, ["adm_removal"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
@@ -306,6 +336,11 @@
     private Task ToggleArrivalList() => Toggle("adm_arrival");
     private Task ToggleRemovalList() => Toggle("adm_removal");
 
+    /// <summary>
+    /// 初始化：依次恢复折叠状态、共享地址、到达/移除的自动模式与已确认 TaskId
+    /// （全部来自 localStorage），随后启动轮询定时器持续同步 WCS 后端状态与台账卡片。
+    /// 恢复数据经 LocalStore 内存缓存同步读取，避免阻塞渲染等待 JS 互操作。
+    /// </summary>
     protected override async Task OnInitializedAsync()
     {
         // 恢复卡片折叠状态（内存缓存，同步读取）
@@ -364,7 +399,8 @@
         await LoadStatus();
         await LoadEvents();
 
-        // 定时轮询：GRCS 每 ~2 秒重发一次申请，前端跟着刷
+        // 定时轮询：GRCS 每 ~2 秒重发一次申请，前端跟着刷。
+        // 回调跑在线程池线程上，UI 状态更新必须经 InvokeAsync 切回同步上下文
         _timer = new System.Threading.Timer(async _ =>
         {
             await LoadStatus();
@@ -375,13 +411,14 @@
         }, null, TimeSpan.FromSeconds(_pollSeconds), TimeSpan.FromSeconds(_pollSeconds));
     }
 
+    /// <summary>释放轮询定时器：防止组件销毁后回调继续执行造成状态泄漏。</summary>
     public void Dispose()
     {
         _timer?.Dispose();
         _timer = null;
     }
 
-    /// <summary>查询后端模式与待确认数。</summary>
+    /// <summary>查询 WCS 后端管理接口的准入模式与待确认数（autoMode / pendingCount），失败时置轮询错误标记。</summary>
     private async Task LoadStatus()
     {
         var (ok, code, json) = await WcsService.GetAdmittanceStatusAsync(_baseUrl);
@@ -396,7 +433,7 @@
         catch { }
     }
 
-    /// <summary>拉取事件列表。</summary>
+    /// <summary>拉取 WCS 后端暂存的进入申请事件列表；后端返回 camelCase JSON，故用大小写不敏感解析。</summary>
     private async Task LoadEvents()
     {
         var (ok, code, json) = await WcsService.GetAdmittanceEventsAsync(_baseUrl);
@@ -418,7 +455,7 @@
         _busy = false;
     }
 
-    /// <summary>切换准入模式。</summary>
+    /// <summary>切换 WCS 后端准入模式（自动/手动），并把后端返回的 JSON 回显到反馈面板。</summary>
     private async Task ToggleMode()
     {
         _busy = true;
@@ -428,7 +465,7 @@
         _busy = false;
     }
 
-    /// <summary>批准或拒绝一个进入申请。</summary>
+    /// <summary>批准或拒绝一个进入申请：裁决结果写回 WCS 后端，由后端通知 GRCS 放行或拒绝。</summary>
     private async Task Decide(string key, bool allow)
     {
         _busy = true;
@@ -442,7 +479,11 @@
     // 货物到达通知（container_ready）
     // ════════════════════════════════════════════════
 
-    /// <summary>从任务台账读取 CARGO_CARRY_INBOUND 任务生成到达卡片；自动模式下顺带全确认。</summary>
+    /// <summary>
+    /// 从任务台账（TaskLedgerService）读取 CARGO_CARRY_INBOUND 任务生成到达卡片；
+    /// 同一 TaskId 只保留最新一条；Confirmed 由持久化的已确认集合决定；
+    /// 自动模式下顺带全确认所有待确认卡片。
+    /// </summary>
     private async Task RefreshArrivals()
     {
         try
@@ -473,7 +514,7 @@
         catch { }
     }
 
-    /// <summary>自动模式：全确认所有待确认卡片。</summary>
+    /// <summary>自动模式：全确认所有待确认卡片（逐张调用 ConfirmArrival）。</summary>
     private async Task AutoConfirmAll()
     {
         foreach (var card in _arrivalCards.Where(c => !c.Confirmed).ToList())
@@ -490,7 +531,7 @@
         _arrivalBusy = false;
     }
 
-    /// <summary>切换货物到达通知模式（自动全确认 / 手动确认）。</summary>
+    /// <summary>切换货物到达通知模式（自动全确认 / 手动确认），并把新状态持久化到 grcs_arrival_auto。</summary>
     private async Task ToggleArrivalMode()
     {
         _arrivalBusy = true;
@@ -506,7 +547,11 @@
         _arrivalBusy = false;
     }
 
-    /// <summary>确认一张到达卡片：POST container_ready 通知 GRCS 货物已就位。</summary>
+    /// <summary>
+    /// 确认一张到达卡片：向 GRCS POST container_ready（货物已就位通知）；
+    /// 发送成功后把 TaskId 写入已确认集合并持久化（grcs_arrival_confirmed），
+    /// 避免刷新页面后对同一任务重复发送通知。
+    /// </summary>
     private async Task ConfirmArrival(ArrivalCard card)
     {
         _arrivalBusy = true;
@@ -535,7 +580,11 @@
     // 货物移除通知（container_remove）
     // ════════════════════════════════════════════════
 
-    /// <summary>从任务台账读取 CARGO_CARRY_OUTBOUND 任务生成移除卡片；自动模式下顺带全确认。</summary>
+    /// <summary>
+    /// 从任务台账（TaskLedgerService）读取 CARGO_CARRY_OUTBOUND 任务生成移除卡片；
+    /// 同一 TaskId 只保留最新一条；Confirmed 由持久化的已确认集合决定；
+    /// 自动模式下顺带全确认所有待确认卡片。
+    /// </summary>
     private async Task RefreshRemovals()
     {
         try
@@ -567,7 +616,7 @@
         catch { }
     }
 
-    /// <summary>自动模式：全确认所有待确认移除卡片。</summary>
+    /// <summary>自动模式：全确认所有待确认移除卡片（逐张调用 ConfirmRemoval）。</summary>
     private async Task AutoConfirmAllRemovals()
     {
         foreach (var card in _removalCards.Where(c => !c.Confirmed).ToList())
@@ -584,7 +633,7 @@
         _removalBusy = false;
     }
 
-    /// <summary>切换货物移除通知模式（自动全确认 / 手动确认）。</summary>
+    /// <summary>切换货物移除通知模式（自动全确认 / 手动确认），并把新状态持久化到 grcs_removal_auto。</summary>
     private async Task ToggleRemovalMode()
     {
         _removalBusy = true;
@@ -600,7 +649,11 @@
         _removalBusy = false;
     }
 
-    /// <summary>确认一张移除卡片：POST container_remove 通知 GRCS 出库容器已移除。</summary>
+    /// <summary>
+    /// 确认一张移除卡片：向 GRCS POST container_remove（出库容器已移除通知）；
+    /// 发送成功后把 TaskId 写入已确认集合并持久化（grcs_removal_confirmed），
+    /// 避免刷新页面后对同一任务重复发送通知。
+    /// </summary>
     private async Task ConfirmRemoval(RemovalCard card)
     {
         _removalBusy = true;
@@ -624,12 +677,14 @@
         _removalBusy = false;
     }
 
+    /// <summary>把最近一次操作结果写入反馈面板（icon 为 ✅/❌/ℹ️）。</summary>
     private void ShowFeedback(string icon, string msg)
     {
         _feedback = $"{icon} {msg}";
         _feedbackClass = msg.StartsWith("❌") ? "error" : "success";
     }
 
+    /// <summary>把 WCS 后端事件状态码（Pending/Approved/Allowed/Rejected）映射为中文标签。</summary>
     private static string StatusLabel(string s) => s switch
     {
         "Pending" => "待确认",
@@ -639,6 +694,7 @@
         _ => s
     };
 
+    /// <summary>把事件状态码映射为徽章样式（badge-warn/info/ok/error）。</summary>
     private static string StatusBadgeClass(string s) => s switch
     {
         "Pending" => "badge-warn",

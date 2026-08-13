@@ -5,6 +5,7 @@
 @inject CargoCodeService CargoCodes
 @inject SignalAutoService SignalAuto
 @inject TaskLedgerService Ledger
+@inject TaskStageHub StageHub
 @implements IDisposable
 
 <PageTitle>信号交互</PageTitle>
@@ -323,24 +324,22 @@
     private bool _signalDirty = true;
 
     /// <summary>
-    /// 共享刷新：一次 HTTP + 一次 JS interop → 同时产出到达/移除卡片和分拣卡片。
-    /// 避免 RefreshTaskCardsAsync 和 ScanStages 各自调用 GetTaskStageEventsAsync 造成重复 HTTP。
+    /// 共享刷新：零 HTTP 产出到达/移除卡片和分拣卡片。
+    /// 优化前这里会 GetTaskStageEventsAsync 拉一次全量；现在阶段事件与 FINISHED 集合
+    /// 直接从 TaskStageHub 内存缓存读（hub 负责轮询与增量合并）。
+    /// 下面两个构建方法复用同一份数据单趟遍历，仍保持"一次内存读 + 一次台账读"的
+    /// 省事设计（台账走 TaskLedgerService 内存缓存，也无 HTTP）。
     /// </summary>
     private async Task RefreshAllAsync()
     {
         try
         {
-            // ── 只要一次 HTTP：拉阶段事件（供到达/移除/分拣三者共享）──
-            var (stageOk, _, stageJson) = await WcsService.GetTaskStageEventsAsync(_wcsBaseUrl);
-            List<StageChangeEvent> stageEvents = [];
-            HashSet<string> finishedIds = [];
-            if (stageOk && !string.IsNullOrEmpty(stageJson))
-            {
-                stageEvents = System.Text.Json.JsonSerializer.Deserialize<List<StageChangeEvent>>(stageJson, _jsonOpts) ?? [];
-                foreach (var e in stageEvents)
-                    if (string.Equals(e.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase))
-                        finishedIds.Add(e.TaskId);
-            }
+            // ── 读共享轮询器缓存：阶段事件 + FINISHED 集合（零 HTTP，轮询由 TaskStageHub 统一负责）──
+            await StageHub.EnsureStartedAsync();
+            List<StageChangeEvent> stageEvents = StageHub.IsOnline ? StageHub.Events.ToList() : [];
+            HashSet<string> finishedIds = StageHub.FinishedTaskIds;
+            if (!StageHub.IsOnline) { _pollingOk = false; _lastError = "无法连接 WCS 后端"; }
+            else { _pollingOk = true; _lastError = ""; }
 
             // ── SignalAuto 后台自动确认后才重载 localStorage 确认集合（否则用内存缓存，省 JS interop）──
             if (_signalDirty)
@@ -637,8 +636,8 @@
 
     private async Task PersistSentTasks() { try { await LocalStore.SetAsync(Js, "grcs_ss_sent", System.Text.Json.JsonSerializer.Serialize(_sentTasks.ToList())); var pc = _cards.Where(c => c.Status == "Sent").ToList(); await LocalStore.SetAsync(Js, "grcs_ss_cards", System.Text.Json.JsonSerializer.Serialize(pc)); } catch { } }
 
-    private async Task DeleteCard(SortingCard card) { _cards.Remove(card); _knownTasks.Remove(card.TaskId); _sentTasks.Remove(card.TaskId); await WcsService.DeleteTaskStageAsync(_wcsBaseUrl, card.TaskId); await PersistSentTasks(); StateHasChanged(); }
-    private async Task DeleteAllCards() { foreach (var c in _cards) await WcsService.DeleteTaskStageAsync(_wcsBaseUrl, c.TaskId); _cards.Clear(); _knownTasks.Clear(); _sentTasks.Clear(); await PersistSentTasks(); _sortingConfirming = false; ShowFeedback(v => _sortingClearMsg = v, "清空完成", ref _sortingClearTimer); StateHasChanged(); }
+    private async Task DeleteCard(SortingCard card) { _cards.Remove(card); _knownTasks.Remove(card.TaskId); _sentTasks.Remove(card.TaskId); await WcsService.DeleteTaskStageAsync(_wcsBaseUrl, card.TaskId); StageHub.RemoveTask(card.TaskId); await PersistSentTasks(); StateHasChanged(); }
+    private async Task DeleteAllCards() { foreach (var c in _cards) await WcsService.DeleteTaskStageAsync(_wcsBaseUrl, c.TaskId); _cards.Clear(); _knownTasks.Clear(); _sentTasks.Clear(); StageHub.ClearAll(); await PersistSentTasks(); _sortingConfirming = false; ShowFeedback(v => _sortingClearMsg = v, "清空完成", ref _sortingClearTimer); StateHasChanged(); }
 
     // ── 辅助 ──
     private static string StatusLabel(string s) => s switch { "Pending" => "待确认", "Approved" => "允许待确认", "Allowed" => "已放行", "Rejected" => "已拒绝", _ => s };

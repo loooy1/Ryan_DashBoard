@@ -13,8 +13,6 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 /// </summary>
 public class SignalAutoService
 {
-    private const string WcsUrlKey = "grcs_wcs_url";
-    private const string DefaultWcsUrl = "http://localhost:8230";
     private const string LeaderKey = "grcs_signal_auto_leader";
     private readonly IJSRuntime _js;
     private readonly IWcsService _wcs;
@@ -22,6 +20,7 @@ public class SignalAutoService
     private readonly LocalStoreService _store;
     private readonly TaskLedgerService _ledger;
     private readonly EventAggregator _events;
+    private readonly TaskStageHub _stageHub;
     private static readonly JsonSerializerOptions Opts = new() { PropertyNameCaseInsensitive = true };
 
     /// <summary>三个自动开关（与信号交互页按钮同源：切换时写 localStorage，页面显示同一值）。</summary>
@@ -38,12 +37,11 @@ public class SignalAutoService
 
     private CancellationTokenSource? _cts;
     private string _baseUrl = "http://localhost:8224";
-    private string _wcsBaseUrl = DefaultWcsUrl;
     private List<MapStationLite> _mapStations = [];
     private bool _jsBridgeInstalled;
 
     public SignalAutoService(IJSRuntime js, IWcsService wcs, CargoCodeService cargoCodes,
-        LocalStoreService store, TaskLedgerService ledger, EventAggregator events)
+        LocalStoreService store, TaskLedgerService ledger, EventAggregator events, TaskStageHub stageHub)
     {
         _js = js;
         _wcs = wcs;
@@ -51,6 +49,7 @@ public class SignalAutoService
         _store = store;
         _ledger = ledger;
         _events = events;
+        _stageHub = stageHub;
     }
 
     /// <summary>启动后台轮询：leader 订阅 storage 事件 + 启动定时器；非 leader 仅订阅 storage 事件。</summary>
@@ -145,24 +144,16 @@ public class SignalAutoService
         if (AutoSend) await TickSortingCoreAsync(events);
     }
 
-    /// <summary>拉取阶段事件并提取 FINISHED 任务集合。</summary>
+    /// <summary>
+    /// 拉取阶段事件并提取 FINISHED 任务集合。
+    /// 优化后为纯内存读：数据由 TaskStageHub（全应用唯一 task-stages 轮询器）负责拉取，
+    /// 本服务只按自己的 3s 节拍消费缓存。职责切分：hub 管"取数"，本服务管"发信号"
+    /// （leader 标签页向 GRCS 发 container_ready / container_remove / operation_finish）。
+    /// </summary>
     private async Task<(List<StageChangeEvent> Events, HashSet<string> Finished)> FetchStageEventsAsync()
     {
-        var events = new List<StageChangeEvent>();
-        var finished = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            var (ok, _, json) = await _wcs.GetTaskStageEventsAsync(_wcsBaseUrl);
-            if (ok && !string.IsNullOrEmpty(json))
-            {
-                events = JsonSerializer.Deserialize<List<StageChangeEvent>>(json, Opts) ?? [];
-                foreach (var e in events)
-                    if (string.Equals(e.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(e.TaskId))
-                        finished.Add(e.TaskId);
-            }
-        }
-        catch { }
-        return (events, finished);
+        await _stageHub.EnsureStartedAsync();
+        return ([.. _stageHub.Events], _stageHub.FinishedTaskIds);
     }
 
     // ── 货物到达：自动段1（空托入库 FINISHED）或 手动段2（带载入库）→ container_ready ──
@@ -292,8 +283,6 @@ public class SignalAutoService
         {
             var grcs = _store["grcs_grcs_url"];
             if (!string.IsNullOrEmpty(grcs) && grcs != "null") _baseUrl = grcs;
-            var wcs = _store[WcsUrlKey];
-            if (!string.IsNullOrEmpty(wcs) && wcs != "null") _wcsBaseUrl = wcs;
             var json = _store["grcs_map_stations"];
             if (!string.IsNullOrEmpty(json) && json != "null")
             {

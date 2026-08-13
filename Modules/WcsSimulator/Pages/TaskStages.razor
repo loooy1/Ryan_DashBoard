@@ -3,6 +3,7 @@
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
 @inject TaskLedgerService Ledger
+@inject TaskStageHub StageHub
 @implements IDisposable
 
 <PageTitle>任务看板</PageTitle>
@@ -209,16 +210,23 @@
         catch { }
     }
 
-    /// <summary>拉取阶段事件并按 TaskId 分组（组内时间正序，组间按最新事件倒序）。</summary>
+    /// <summary>
+    /// 从共享轮询器缓存读阶段事件并按 TaskId 分组。
+    /// 优化前本方法自己发 HTTP（每 _pollSeconds 秒全量拉一次并反序列化），
+    /// 现在零 HTTP：拉取/增量合并由 TaskStageHub 统一负责，本方法只做
+    /// 展示层工作——补任务类型、按分组上限裁剪、持久化到浏览器缓存。
+    /// 页面顶部的 _timer 保留：它不再发请求，只负责按节拍把 hub 缓存的最新
+    /// 数据刷进 UI（折叠时跳过，不浪费渲染）。
+    /// </summary>
     private async Task LoadEvents()
     {
         await RebuildTaskTypeMap();
-        var (ok, code, json) = await WcsService.GetTaskStageEventsAsync(_baseUrl);
-        if (!ok) { _pollingOk = false; _lastError = $"HTTP {code}"; return; }
+        await StageHub.EnsureStartedAsync();
+        if (!StageHub.IsOnline) { _pollingOk = false; _lastError = "无法连接 WCS 后端"; return; }
         _pollingOk = true;
+        var events = StageHub.Events.ToList();
         try
         {
-            var events = System.Text.Json.JsonSerializer.Deserialize<List<StageChangeEvent>>(json, _jsonOpts) ?? [];
             // 从下发历史匹配任务类型
             foreach (var e in events)
             {
@@ -228,7 +236,7 @@
             // 持久化到浏览器（仅当后端有数据时才更新，防止重启后清空缓存）
             if (events.Count > 0)
             {
-                await LocalStore.SetAsync(Js, "grcs_ts_events", json);
+                await LocalStore.SetAsync(Js, "grcs_ts_events", System.Text.Json.JsonSerializer.Serialize(events));
                 BuildGroups(events);
             }
         }
@@ -267,11 +275,13 @@
             _busy = false;
             return;
         }
-        // 2. 记录到已删除集合（持久化）
+        // 2. 同步共享轮询器缓存，避免其他页面的等待者基于已删除事件误判
+        StageHub.RemoveTask(taskId);
+        // 3. 记录到已删除集合（持久化）
         _deletedTaskIds.Add(taskId);
         await LocalStore.SetAsync(Js, "grcs_ts_deleted",
             System.Text.Json.JsonSerializer.Serialize(_deletedTaskIds));
-        // 3. 从当前分组中移除
+        // 4. 从当前分组中移除
         _groups.Remove(taskId);
         _busy = false;
     }
@@ -296,6 +306,7 @@
         await LocalStore.SetAsync(Js, "grcs_ts_deleted",
             System.Text.Json.JsonSerializer.Serialize(_deletedTaskIds));
         _groups.Clear();
+        StageHub.ClearAll();   // 后端已清空，同步共享轮询器缓存
         _clearConfirming = false;
         _busy = false;
     }

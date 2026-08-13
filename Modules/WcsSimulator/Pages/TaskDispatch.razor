@@ -4,10 +4,26 @@
 @inject LocalStoreService LocalStore
 @inject TaskLedgerService Ledger
 
+@* ════════════════════════════════════════════════
+   页面职责：WCS 模拟器的「容器任务下发」页
+   ── 数据流 ──
+   ① 任务类型来自 TaskTypeRegistry 注册表（每种类型定义站点数量/标签/
+      是否四行模式等元数据），选中后动态调整卡片站点输入
+   ② 站点编码按地图类型转换为实际下发编码（储位 → mark_1、接驳位 → mark_0）
+   ③ 四行模式按 GRCS 库存自动匹配另一半（托盘↔货物），未匹配禁止下发
+   ④ 组装 WcsTaskGroup 报文 POST 到 GRCS WCS 任务组接口
+   ⑤ 下发结果写入任务台账（TaskLedgerService，唯一数据源），
+      供下发历史页展示、接驳位信号交互页生成 container_ready/remove 卡片
+   ── 交互服务 ──
+   IWcsService：任务组下发 + GRCS 库存查询
+   TaskLedgerService：台账写入；LocalStoreService：表单快照持久化
+   ════════════════════════════════════════════════ *@
 <PageTitle>WCS 任务下发</PageTitle>
 
 @* ════════════════════════════════════════════════
    连接设置：配置 GRCS 后端地址和场景名
+   ── 说明 ── 地址与场景名从共享 localStorage 键（grcs_grcs_url /
+   grcs_warehouse）恢复；输入框失焦时把整个表单快照写入 grcs_td_state
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
@@ -38,6 +54,8 @@
 
 @* ════════════════════════════════════════════════
    任务组配置：组ID、时间、优先级
+   ── 说明 ── 对应 GRCS 任务组报文 ZkWcsTaskGroupInfo：一次下发
+   包含一个组 ID + 一批任务项；组 ID 自动生成（GRP_ 前缀）
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleGroup" title="点击折叠/展开">
@@ -69,6 +87,9 @@
 
 @* ════════════════════════════════════════════════
    任务类型选择器：15 种托盘架/普通任务类型
+   ── 说明 ── TaskTypeRegistry 是任务类型注册表：每种类型携带
+   站点数量、站点标签、描述等元数据；切换类型会同步调整
+   所有卡片的站点输入框数量，并决定是否四行模式
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleType" title="点击折叠/展开">🎯 选择任务类型
@@ -112,6 +133,9 @@
 
 @* ════════════════════════════════════════════════
    任务卡片列表：每个卡片 = 一个任务
+   ── 说明 ── 容器/站点输入框支持地图下拉选择（候选来自地图缓存
+   grcs_map_stations 与 GRCS 库存）；四行模式第三行只读自动匹配；
+   入库段2 任务容器号自动生成并锁定不可编辑
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleTasks" title="点击折叠/展开">
@@ -287,16 +311,21 @@
     private string _validationError = "";                  // 站点校验错误
     private int _cardCounter;                              // 任务卡片计数器（生成唯一 ID 用）
 
-    // ── 地图站点数据（从地图信息页的缓存加载，用于站点编码转换）──
+    // ── 地图站点数据（从地图信息页写入的缓存键 grcs_map_stations 加载，
+    //    用于站点编码转换、类型校验与下拉选择）──
     private List<MapStationLite> _mapStations = [];
     private int _pickerCard = -1;                          // 展开站点选择器的卡片索引
     private int _pickerStation = -1;                       // 展开站点选择器的站点索引
     private int _pickerContainer = -1;                     // 展开容器选择器的卡片索引
     private List<string> _containerCodes = [];              // 所有容器编号（从 GRCS 加载）
-    private List<CargoInventoryItem> _invRecords = [];      // 容器库存记录（出库段2 托盘带货校验）
-    private DateTime _invLastQuery = DateTime.MinValue;      // 库存查询节流时间戳
+    private List<CargoInventoryItem> _invRecords = [];      // 容器库存记录（托盘↔货物配对、出库段2 托盘带货校验）
+    private DateTime _invLastQuery = DateTime.MinValue;      // 库存查询节流时间戳（2 秒内不重复查询 GRCS）
 
-    /// <summary>根据地图站点类型解析下发编码：储位 → mark_1，人工分拣台/接驳位 → mark_0，其他原样。</summary>
+    /// <summary>
+    /// 根据地图站点类型解析下发编码：界面显示地图原始编码 mark，
+    /// 但 GRCS 任务协议要求按站点类型带后缀 —— 储位 → mark_1、
+    /// 人工分拣台/接驳位 → mark_0、其他类型原样；ToWcsCode 完成该映射。
+    /// </summary>
     /// <returns>(类型名, 下发编码)；站点不在地图中时返回 (null, null)。</returns>
     private (string? TypeName, string? SendCode) ResolveStationCode(string mark)
     {
@@ -314,7 +343,7 @@
         return (string.IsNullOrEmpty(typeName) ? "未知类型" : typeName, sendCode);
     }
 
-    /// <summary>站点编辑栏下方的提示文字：显示实际下发的编码。</summary>
+    /// <summary>站点编辑栏下方的提示文字：实时显示该站点实际下发的编码，站点不在地图中时警告将原样下发。</summary>
     private string StationCodeHint(string mark)
     {
         if (string.IsNullOrWhiteSpace(mark)) return "";
@@ -334,6 +363,7 @@
         if (_pickerCard == cardIdx && _pickerStation == stationIdx) CloseStationPicker();
         else OpenStationPicker(cardIdx, stationIdx);
     }
+    /// <summary>从下拉选择站点：写入卡片后，入库段2 需按新起点重新匹配对应托盘（库存联动）。</summary>
     private async void PickStation(int cardIdx, int stationIdx, string mark)
     {
         if (cardIdx >= 0 && cardIdx < _taskCards.Count)
@@ -345,6 +375,7 @@
         }
         CloseStationPicker();
     }
+    /// <summary>站点输入框键入：实时更新值并持久化表单；入库段2 起点变化后重新匹配对应托盘。</summary>
     private async void OnStationInput(int cardIdx, int stationIdx, ChangeEventArgs e)
     {
         if (cardIdx >= 0 && cardIdx < _taskCards.Count)
@@ -364,6 +395,7 @@
     {
         _pickerContainer = _pickerContainer == cardIdx ? -1 : cardIdx;
     }
+    /// <summary>从下拉选择容器：四行模式下按最新库存自动匹配另一半（托盘↔货物）。</summary>
     private async void PickContainer(int cardIdx, string code)
     {
         if (cardIdx >= 0 && cardIdx < _taskCards.Count)
@@ -373,6 +405,7 @@
         }
         CloseContainerPicker();
     }
+    /// <summary>容器输入框键入：实时更新并持久化表单；四行模式下自动重匹配另一半。</summary>
     private async void OnContainerInput(int cardIdx, ChangeEventArgs e)
     {
         if (cardIdx >= 0 && cardIdx < _taskCards.Count)
@@ -382,6 +415,7 @@
         }
         await SaveFormState();
     }
+    /// <summary>多关键词匹配：关键词按空格拆分后全部命中才算匹配（AND 语义，大小写不敏感）。</summary>
     private static bool MatchWords(string text, string keyword)
     {
         if (string.IsNullOrEmpty(keyword)) return true;
@@ -389,6 +423,7 @@
         return words.All(w => text.Contains(w, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>容器下拉候选：GRCS 库存中的容器编号按关键词过滤。</summary>
     private List<string> ContainerPickerResults(string keyword)
     {
         return _containerCodes
@@ -396,6 +431,7 @@
             .ToList();
     }
 
+    /// <summary>站点下拉候选：启用站点 + 按该行站点标签限定类型 + 关键词匹配编码或类型名。</summary>
     private List<MapStationLite> StationPickerResults()
     {
         var keyword = _pickerCard >= 0 && _pickerCard < _taskCards.Count
@@ -412,7 +448,7 @@
             .ToList();
     }
 
-    /// <summary>根据站点标签过滤站点类型。</summary>
+    /// <summary>把站点标签语义（库位/分拣/接驳/输送）映射为类型位掩码过滤：下拉候选与下发前校验共用此规则。</summary>
     private static bool MatchStationType(MapStationLite s, string label)
     {
         if (string.IsNullOrEmpty(label)) return true;
@@ -435,7 +471,7 @@
         return sendCode ?? mark;
     }
 
-    // ── 卡片折叠状态（持久化到浏览器，切走再回来保持）──
+    // ── 卡片折叠状态（持久化到 localStorage 键 grcs_td_collapsed，切走再回来保持）──
     private Dictionary<string, bool> _collapsed = new() { ["td_conn"] = true, ["td_group"] = true, ["td_type"] = true, ["td_tasks"] = true, ["td_resp"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
@@ -461,7 +497,7 @@
         public List<string> StationCodes { get; set; } = ["", ""];
     }
 
-    /// <summary>表单持久化状态。</summary>
+    /// <summary>表单快照：序列化到 localStorage 键 grcs_td_state，每次编辑失焦即写回，刷新页面后整表恢复。</summary>
     private class FormState
     {
         public string BaseUrl { get; set; } = "";
@@ -475,6 +511,12 @@
         public int CardCounter { get; set; }
     }
 
+    /// <summary>
+    /// 初始化：从 localStorage 依次恢复共享配置（场景名/GRCS 地址）、
+    /// 表单快照（grcs_td_state）、地图站点缓存、折叠状态；
+    /// 未恢复成功则生成默认组 ID/时间与一张空白卡片；
+    /// 编辑任务区已展开且容器列表尚未加载时补拉一次库存。
+    /// </summary>
     // 页面初始化：从 localStorage 恢复或生成默认状态
     protected override async Task OnInitializedAsync()
     {
@@ -526,7 +568,11 @@
         if (!IsCollapsed("td_tasks")) await LoadContainerCodes();
     }
 
-    /// <summary>加载容器库存（匹配/下拉用）。节流：2 秒内不重复查询；force 强制重查（匹配失败时）。</summary>
+    /// <summary>
+    /// 加载容器库存（托盘↔货物配对、下拉候选用）：调用 WcsService.QueryCargoInventoryAsync
+    /// 查询 GRCS 库存接口。节流：2 秒内不重复查询；force=true 强制重查（匹配失败重试时）。
+    /// 加载完成后对四行模式卡片重新匹配另一半，弥补输入早于库存就绪的漏匹配。
+    /// </summary>
     private async Task LoadContainerCodes(bool force = false)
     {
         if (!force && _invRecords.Count > 0 && (DateTime.Now - _invLastQuery).TotalSeconds < 2) return;
@@ -568,6 +614,7 @@
         }
     }
 
+    /// <summary>把当前表单整体序列化到 localStorage 键 grcs_td_state（防刷新丢表单）。</summary>
     private async Task SaveFormState()
     {
         try
@@ -664,7 +711,7 @@
         }
     }
 
-    /// <summary>选中一个任务类型，自动调整所有卡片中的站点数量。</summary>
+    /// <summary>选中一个任务类型：自动把各卡片的站点数量调整到该类型的站点数，并按最新库存重匹配四行模式另一半。</summary>
     private async void SelectType(TaskTypeInfo tt)
     {
         var wasCargoCarryInbound = IsCargoCarryInbound;
@@ -710,7 +757,12 @@
     /// <summary>删除指定位置的任务卡片。</summary>
     private async void RemoveTaskCard(int i) { _taskCards.RemoveAt(i); await SaveFormState(); }
 
-    /// <summary>收集表单数据、拼 JSON、POST 到 GRCS 后端。</summary>
+    /// <summary>
+    /// 下发主流程：前端校验 → 站点编码按地图类型转换 → 站点类型校验 →
+    /// 重拉库存并按最新库存匹配四行模式另一半（未匹配禁止下发）→
+    /// 组装 WcsTaskGroup 报文 POST 到 GRCS 任务组接口 →
+    /// 结果写入任务台账（TaskLedgerService，唯一数据源）→ 成功后刷新所有任务号。
+    /// </summary>
     private async Task SendTasks()
     {
         // ── 前端校验 ──
@@ -807,7 +859,9 @@
         var (ok, code, json) = await WcsService.SendTaskGroupAsync(_baseUrl, _apiVersion, payload);
         ShowResp((ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}", ok ? "success" : "error");
 
-        // ── 保存到台账（唯一数据源，取代下发历史）──
+        // ── 保存到台账（唯一数据源，取代下发历史）。
+        //    台账同时供两个下游消费：下发历史页直接展示；
+        //    接驳位信号交互页据此生成 container_ready / container_remove 通知卡片 ──
         try
         {
             var ledgerEntries = new List<TaskLedgerEntry>();
@@ -879,7 +933,7 @@
         _respClass = cls;
     }
 
-    /// <summary>重置整个表单回到初始状态。</summary>
+    /// <summary>重置整个表单：重新生成组 ID/时间、清空类型与卡片并补一张空白卡片。</summary>
     private async void ResetForm()
     {
         _groupId = "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();

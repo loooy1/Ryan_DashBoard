@@ -17,6 +17,7 @@ public class ContainerTaskService
     private readonly IWcsService _wcs;
     private readonly CargoCodeService _cargoCodes;
     private readonly StationLockService _stationLocks;
+    private readonly TaskStageHub _stageHub;
     private static readonly JsonSerializerOptions Opts = new() { PropertyNameCaseInsensitive = true };
 
     // ── 执行状态（跨导航存活）──
@@ -49,11 +50,12 @@ public class ContainerTaskService
     private readonly LocalStoreService _store;
     private readonly TaskLedgerService _ledger;
 
-    public ContainerTaskService(IWcsService wcs, CargoCodeService cargoCodes, StationLockService stationLocks, LocalStoreService store, TaskLedgerService ledger)
+    public ContainerTaskService(IWcsService wcs, CargoCodeService cargoCodes, StationLockService stationLocks, TaskStageHub stageHub, LocalStoreService store, TaskLedgerService ledger)
     {
         _wcs = wcs;
         _cargoCodes = cargoCodes;
         _stationLocks = stationLocks;
+        _stageHub = stageHub;
         _store = store;
         _ledger = ledger;
     }
@@ -80,11 +82,30 @@ public class ContainerTaskService
 
     public void ClearLogs() { Logs.Clear(); Changed?.Invoke(); }
 
+    /// <summary>
+    /// 日志通知合并（防抖）：与 AutoRunService.Log 同款机制。
+    /// 批量执行（ExecuteAsync 的段1 循环 + 段2 并行等待）时日志密集连发，
+    /// 150ms 窗口内的多条日志合并成一次 Changed，页面每轮最多重渲染一次。
+    /// </summary>
+    private bool _notifyPending;
+    private System.Threading.Timer? _flushTimer;
+
     private void Log(string msg, string color = "#94a3b8")
     {
         Logs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = msg, Color = color });
         if (Logs.Count > 500) Logs.RemoveRange(0, Logs.Count - 500);
-        Changed?.Invoke();
+        _notifyPending = true;
+        _flushTimer?.Dispose();
+        _flushTimer = new System.Threading.Timer(_ =>
+        {
+            _flushTimer?.Dispose();
+            _flushTimer = null;
+            if (_notifyPending)
+            {
+                _notifyPending = false;
+                Changed?.Invoke();
+            }
+        }, null, 150, Timeout.Infinite);
     }
 
     /// <summary>保存任务台账（唯一数据源，取代下发历史，内存缓存写穿）。ContainerCode=托盘号，CargoCode=货物号。</summary>
@@ -332,23 +353,9 @@ public class ContainerTaskService
             + (errors.Count > 0 ? "\n\n" + string.Join("\n", errors.Take(10)) : "");
     }
 
-    /// <summary>无限等待任务 FINISHED（无超时，直到段1 完成）。</summary>
+    /// <summary>无限等待任务 FINISHED（无超时，直到段1 完成）。共享轮询器替代各自 1s 轮询。</summary>
     private async Task WaitFinishedAsync(string taskId)
     {
-        while (true)
-        {
-            try
-            {
-                var (ok, _, evtJson) = await _wcs.GetTaskStageEventsAsync(_wcsBaseUrl);
-                if (ok && !string.IsNullOrEmpty(evtJson))
-                {
-                    var evts = JsonSerializer.Deserialize<List<StageChangeEvent>>(evtJson, Opts) ?? [];
-                    if (evts.Any(e => string.Equals(e.TaskId, taskId, StringComparison.OrdinalIgnoreCase) && string.Equals(e.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase)))
-                        return;
-                }
-            }
-            catch { }
-            await Task.Delay(1000);
-        }
+        await _stageHub.WaitFinishedAsync(taskId);
     }
 }

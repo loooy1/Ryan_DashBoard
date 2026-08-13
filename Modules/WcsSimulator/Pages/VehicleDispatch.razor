@@ -4,10 +4,23 @@
 @inject LocalStoreService LocalStore
 @using System.Text.Json
 
+@* ════════════════════════════════════════════════
+   页面职责：WCS 模拟器的「移动任务下发」页 —— 单任务多站点的
+   纯移动（MOVE_ONLY）任务，POST 到 GRCS 运力调度接口
+   /api/RawOrder/ChangeFloor（不走 WCS 协议 task_receive）
+   ── 数据流 ── 站点下拉候选来自地图缓存 grcs_map_stations；
+   有地图数据时下发前校验站点必须精确存在；
+   不指定车辆时由 GRCS 调度器自动分配空闲车辆，优先级 ≤10 转为 Standby 待命
+   ── 交互服务 ──
+   IWcsService：SendVehicleOrderAsync 封装 ChangeFloor HTTP 调用
+   LocalStoreService：共享配置与折叠状态持久化
+   ════════════════════════════════════════════════ *@
 <PageTitle>车辆移动</PageTitle>
 
 @* ════════════════════════════════════════════════
-   连接设置：配置 GRCS 后端地址和场景名
+   连接设置：配置 GRCS 后端地址和场景名（初始化时从共享
+   localStorage 键 grcs_grcs_url / grcs_warehouse 恢复）；
+   地图数据提示来自地图信息页写入的缓存键 grcs_map_stations
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
@@ -49,6 +62,8 @@
 
 @* ════════════════════════════════════════════════
    编辑任务：任务信息 + 目标站点
+   ── 说明 ── MOVE_ONLY 支持多站点，车辆按顺序依次前往；
+   每个站点输入框都是搜索框，下拉候选来自地图缓存中的启用站点
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleEdit" title="点击折叠/展开">
@@ -184,14 +199,15 @@
     private string _responseText = "等待发送任务...";       // 响应面板文字
     private string _respClass = "";                        // 响应面板样式
 
-    // ── 地图站点缓存（地图信息页保存到浏览器的数据）──
+    // ── 地图站点缓存（地图信息页保存到浏览器键 grcs_map_stations 的数据，
+    //    用于下拉候选与下发前站点存在性校验）──
     private List<MapStationLite> _mapStations = [];        // 地图站点（用于下拉候选）
     private string _mapSavedAt = "";                       // 地图数据保存时间
 
     // ── 站点选择器状态 ──
     private int _openPicker = -1;                          // 当前展开的站点选择器行（-1=无）
 
-    // ── 卡片折叠状态（持久化到浏览器，切走再回来保持）──
+    // ── 卡片折叠状态（持久化到 localStorage 键 grcs_vehicle_collapsed，切走再回来保持）──
     private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["edit"] = true, ["resp"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
@@ -236,6 +252,11 @@
 
     private static readonly JsonSerializerOptions MapJsonOpts = new() { PropertyNameCaseInsensitive = true };
 
+    /// <summary>
+    /// 初始化：生成 MV_ 前缀任务 ID 与下发时间；从共享 localStorage 键
+    /// 恢复场景名与 GRCS 地址；读取地图站点缓存供下拉与校验；
+    /// 恢复折叠状态（失败则用默认全部折叠）。
+    /// </summary>
     // 页面初始化：生成任务 ID 和时间，读取浏览器中的地图站点缓存
     protected override async Task OnInitializedAsync()
     {
@@ -277,11 +298,17 @@
         catch { /* 折叠状态读取失败时使用默认（全部折叠） */ }
     }
 
+    /// <summary>追加一个空目标站点（车辆将按顺序依次前往）。</summary>
     private void AddStation() => _stations.Add("");
 
+    /// <summary>移除指定目标站点（至少保留一个）。</summary>
     private void RemoveStation(int i) => _stations.RemoveAt(i);
 
-    /// <summary>收集表单、POST 到 GRCS 的 /api/RawOrder/ChangeFloor。</summary>
+    /// <summary>
+    /// 收集表单并组装 VehicleOrderRequest：VehicleName 留空 = 由 GRCS
+    /// 调度器自动分配空闲车辆；有地图数据时先校验站点必须精确存在；
+    /// 经 WcsService.SendVehicleOrderAsync POST 到 /api/RawOrder/ChangeFloor。
+    /// </summary>
     private async Task SendVehicleOrder()
     {
         // ── 前端校验 ──
@@ -327,6 +354,7 @@
         _sending = false;
     }
 
+    /// <summary>把最近一次 HTTP 交互结果写入响应面板。</summary>
     private void ShowResp(string msg, string cls)
     {
         _responseText = msg;

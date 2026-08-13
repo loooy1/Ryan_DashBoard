@@ -91,6 +91,12 @@
                 </tbody>
             </table>
         </div>
+        @if (_cargoItems.Count < _cargoTotal)
+        {
+            <button class="btn btn-outline btn-sm" @onclick="LoadMoreCargo" disabled="@_cargoLoadingMore" style="margin-top:8px;">
+                @(_cargoLoadingMore ? "⏳ 加载中..." : $"加载更多（已显示 {_cargoItems.Count} / 共 {_cargoTotal}）")
+            </button>
+        }
     }
     else if (_cargoQueried)
     {
@@ -165,9 +171,12 @@
     private List<CargoInventoryItem> _cargoItems = [];
     private int _cargoTotal;
     private bool _cargoLoading;
+    private bool _cargoLoadingMore;
     private bool _cargoQueried;
     private string _cargoLoadedAt = "";
     private string _cargoError = "";
+    private const int CargoPageSize = 200;   // 分页拉取：每页 200 条，避免一次渲染数千行
+    private int _cargoPageNo = 1;
 
     // ── 模拟增加库存 ──
     private string _autoSceneName = "Show";
@@ -219,12 +228,26 @@
             if (V("grcs_cargo_inventory") is string cargoJson)
             {
                 var cached = JsonSerializer.Deserialize<List<CargoInventoryItem>>(cargoJson, JsonOpts);
-                if (cached is { Count: > 0 }) { _cargoItems = cached; _cargoTotal = cached.Count; if (V("grcs_cargo_inventory_at") is string at) _cargoLoadedAt = at; }
+                if (cached is { Count: > 0 })
+                {
+                    _cargoItems = cached;
+                    _cargoTotal = V("grcs_cargo_inventory_total") is string t && int.TryParse(t, out var n) ? n : cached.Count;
+                    _cargoPageNo = 1;
+                    if (V("grcs_cargo_inventory_at") is string at) _cargoLoadedAt = at;
+                }
             }
         }
         catch { }
     }
 
+    /// <summary>
+    /// 查询库存：分页拉取第 1 页（CargoPageSize=200 条/页）。
+    /// 优化前一次拉 pageSize=2000 并在页面上全量渲染，容器多时 Blazor diff 明显卡顿；
+    /// 现在首屏只渲染 200 行，需要时通过"加载更多"按钮按页追加。
+    /// 总数取接口返回的 data.totalCount（GRCS /api/Cargo 原生支持 pageNo/pageSize 分页），
+    /// 按钮只在"已显示 &lt; 总数"时出现。注意：自动化服务（AutoRunService/ContainerTaskService）
+    /// 的配对逻辑需要全量库存，它们仍按 2000 条全量拉取，与本页互不影响。
+    /// </summary>
     private async Task QueryInventory()
     {
         if (string.IsNullOrWhiteSpace(_cargoBaseUrl)) { _cargoError = "请填写服务器地址"; return; }
@@ -234,7 +257,8 @@
         try
         {
             var (ok, code, json) = await WcsService.QueryCargoInventoryAsync(
-                _cargoBaseUrl, _cargoCodeFilter, _cargoSceneFilter, _cargoLockedFilter);
+                _cargoBaseUrl, _cargoCodeFilter, _cargoSceneFilter, _cargoLockedFilter,
+                pageNo: 1, pageSize: CargoPageSize);
             if (!ok)
             {
                 _cargoItems = [];
@@ -250,11 +274,13 @@
                 _cargoError = result?.Message ?? "返回数据为空";
                 return;
             }
+            _cargoPageNo = 1;
             _cargoItems = result.Data.Records ?? [];
             _cargoTotal = result.Data.TotalCount;
             _cargoLoadedAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
 
             await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
+            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
             await LocalStore.SetAsync(Js, "grcs_cargo_inventory_at", _cargoLoadedAt);
         }
         catch (Exception ex)
@@ -264,6 +290,35 @@
             _cargoError = ex.Message;
         }
         finally { _cargoLoading = false; }
+    }
+
+    /// <summary>分页追加下一页（渲染保持在小规模，页面滚动/操作更流畅）。</summary>
+    private async Task LoadMoreCargo()
+    {
+        if (_cargoLoadingMore || _cargoItems.Count >= _cargoTotal) return;
+        _cargoLoadingMore = true;
+        _cargoError = "";
+        try
+        {
+            var next = _cargoPageNo + 1;
+            var (ok, code, json) = await WcsService.QueryCargoInventoryAsync(
+                _cargoBaseUrl, _cargoCodeFilter, _cargoSceneFilter, _cargoLockedFilter,
+                pageNo: next, pageSize: CargoPageSize);
+            if (!ok) { _cargoError = $"HTTP {code}"; return; }
+            var result = JsonSerializer.Deserialize<CargoQueryResult>(json, JsonOpts);
+            if (result is not { Code: 0, Data: not null })
+            {
+                _cargoError = result?.Message ?? "返回数据为空";
+                return;
+            }
+            _cargoPageNo = next;
+            _cargoItems.AddRange(result.Data.Records ?? []);
+            _cargoTotal = result.Data.TotalCount;
+            await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
+            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
+        }
+        catch (Exception ex) { _cargoError = ex.Message; }
+        finally { _cargoLoadingMore = false; }
     }
 
     private void ResetCargoFilter()
@@ -288,8 +343,9 @@
         if (ok)
         {
             _cargoItems.Remove(cargo);
-            _cargoTotal = _cargoItems.Count;
+            _cargoTotal = Math.Max(0, _cargoTotal - 1);
             await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
+            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
         }
     }
 
@@ -306,9 +362,10 @@
             if (ok) { okCount++; _cargoItems.Remove(cargo); }
             else { failCount++; }
         }
-        _cargoTotal = _cargoItems.Count;
+        _cargoTotal = Math.Max(0, _cargoTotal - okCount);
         ShowFeedback(failCount == 0 ? "✅" : "⚠️", $"删除完成：{okCount} 成功 / {failCount} 失败");
         await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
+        await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
     }
 
     /// <summary>调用 /AutoContainerEnter 批量生成容器库存。</summary>

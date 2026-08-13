@@ -17,6 +17,7 @@ public class AutoRunService
     private readonly CargoCodeService _cargoCodes;
     private readonly StationLockService _stationLocks;
     private readonly SignalAutoService _signalAuto;
+    private readonly TaskStageHub _stageHub;
     private static readonly JsonSerializerOptions Opts = new() { PropertyNameCaseInsensitive = true };
 
     public bool Running { get; private set; }
@@ -38,12 +39,13 @@ public class AutoRunService
     private readonly LocalStoreService _store;
     private readonly TaskLedgerService _ledger;
 
-    public AutoRunService(IWcsService wcs, CargoCodeService cargoCodes, StationLockService stationLocks, SignalAutoService signalAuto, LocalStoreService store, TaskLedgerService ledger)
+    public AutoRunService(IWcsService wcs, CargoCodeService cargoCodes, StationLockService stationLocks, SignalAutoService signalAuto, TaskStageHub stageHub, LocalStoreService store, TaskLedgerService ledger)
     {
         _wcs = wcs;
         _cargoCodes = cargoCodes;
         _stationLocks = stationLocks;
         _signalAuto = signalAuto;
+        _stageHub = stageHub;
         _store = store;
         _ledger = ledger;
     }
@@ -309,24 +311,10 @@ public class AutoRunService
         Finish(palletCode);
     }
 
-    /// <summary>轮询 task-stages 直到任务 FINISHED（无超时，一直等）。</summary>
+    /// <summary>等待任务 FINISHED：订阅共享轮询器（全应用唯一 task-stages 轮询），不再自行 1s 打 HTTP。</summary>
     private async Task WaitFinishedAsync(string taskId)
     {
-        while (true)
-        {
-            try
-            {
-                var (ok, _, evtJson) = await _wcs.GetTaskStageEventsAsync(_wcsBaseUrl);
-                if (ok && !string.IsNullOrEmpty(evtJson))
-                {
-                    var evts = JsonSerializer.Deserialize<List<StageChangeEvent>>(evtJson, Opts) ?? [];
-                    if (evts.Any(e => string.Equals(e.TaskId, taskId, StringComparison.OrdinalIgnoreCase) && string.Equals(e.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase)))
-                        return;
-                }
-            }
-            catch { }
-            await Task.Delay(1000);
-        }
+        await _stageHub.WaitFinishedAsync(taskId);
     }
 
     /// <summary>保存任务台账（唯一数据源，取代下发历史，内存缓存写穿）。ContainerCode=托盘号，CargoCode=货物号。</summary>
@@ -335,11 +323,44 @@ public class AutoRunService
     /// <summary>流程结束（成功或失败）后解除托盘占用，下轮轮询可再次发现（此时库存状态已变化）。</summary>
     private void Finish(string palletCode) => _handled.Remove(palletCode);
 
+    /// <summary>
+    /// 日志通知合并（防抖）：连续日志在 150ms 内只触发一次 Changed。
+    /// 一轮轮询 PollOnceAsync 会连写 5~10 条日志（发现托盘 → 下发段1 → 台账 → 完成……），
+    /// 优化前每条都 Changed?.Invoke()，底部状态栏和「自动化任务」页的 500 条日志列表
+    /// 每轮被重渲染 5~10 次。合并后每轮最多 1 次；单独的日志（如后台流程完成时的一条）
+    /// 150ms 后也能及时送达 UI，不会积压。
+    /// </summary>
+    private bool _notifyPending;
+    private System.Threading.Timer? _flushTimer;
+
     private void Log(string msg, string color = "#94a3b8")
     {
         Logs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = msg, Color = color });
         if (Logs.Count > 500) Logs.RemoveRange(0, Logs.Count - 500);
-        Changed?.Invoke();
+        _notifyPending = true;
+        _flushTimer?.Dispose();
+        _flushTimer = new System.Threading.Timer(_ =>
+        {
+            _flushTimer?.Dispose();
+            _flushTimer = null;
+            if (_notifyPending)
+            {
+                _notifyPending = false;
+                Changed?.Invoke();
+            }
+        }, null, 150, Timeout.Infinite);
+    }
+
+    /// <summary>立即落盘一次未发出的通知（停止/清空时保证 UI 同步）。</summary>
+    private void FlushNotifications()
+    {
+        _flushTimer?.Dispose();
+        _flushTimer = null;
+        if (_notifyPending)
+        {
+            _notifyPending = false;
+            Changed?.Invoke();
+        }
     }
 }
 

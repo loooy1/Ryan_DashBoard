@@ -7,7 +7,10 @@
 <PageTitle>下发历史</PageTitle>
 
 @* ════════════════════════════════════════════════
-   下发历史页面：从任务台账读取并展示（唯一数据源）
+   下发历史页面：从任务台账（TaskLedgerService）读取并展示（唯一数据源）
+   ── 数据流 ── 各下发页面成功后写入台账，本页只读展示：
+   类型筛选 + 关键词搜索 + 每页 100 条分批加载；
+   台账同时被接驳位信号交互页消费（生成 container_ready/remove 卡片）
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleHistory" title="点击折叠/展开">
@@ -63,13 +66,14 @@
 </div>
 
 @code {
-    private List<TaskLedgerEntry> _ledger = [];
-    private List<TaskLedgerEntry> _filtered = [];
-    private List<TaskLedgerEntry> _visible = [];
-    private string _activeFilter = "all";
-    private string _keyword = "";
-    private const int PageSize = 100;
+    private List<TaskLedgerEntry> _ledger = [];     // 台账原始数据（初始化时从 TaskLedgerService 读取）
+    private List<TaskLedgerEntry> _filtered = [];   // 经筛选 + 关键词过滤后的结果
+    private List<TaskLedgerEntry> _visible = [];    // 当前已加载的可视窗口（分页加载，每页 PageSize 条）
+    private string _activeFilter = "all";           // 当前类型筛选键（见 _filters）
+    private string _keyword = "";                   // 关键词（任务ID/托盘/货物/站点）
+    private const int PageSize = 100;               // 每页条数，防大量记录一次渲染卡顿
 
+    // 类型筛选注册表：键 → 中文标签；ApplyFilter 里按键映射到具体任务类型码
     private static readonly Dictionary<string, string> _filters = new()
     {
         ["all"] = "全部",
@@ -79,7 +83,7 @@
         ["move"] = "移库"
     };
 
-    // ── 卡片折叠状态（持久化到浏览器）──
+    // ── 卡片折叠状态（持久化到 localStorage 键 grcs_th_collapsed）──
     private Dictionary<string, bool> _collapsed = new() { ["th_history"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
@@ -89,6 +93,7 @@
     }
     private Task ToggleHistory() => Toggle("th_history");
 
+    /// <summary>初始化：读取台账全部记录并恢复折叠状态，然后应用筛选。</summary>
     protected override async Task OnInitializedAsync()
     {
         try
@@ -107,10 +112,13 @@
         ApplyFilter();
     }
 
+    /// <summary>切换类型筛选芯片。</summary>
     private void SetFilter(string f) { _activeFilter = f; ApplyFilter(); }
 
+    /// <summary>关键词输入实时过滤。</summary>
     private void OnKeywordChanged(ChangeEventArgs e) { _keyword = e.Value?.ToString() ?? ""; ApplyFilter(); }
 
+    /// <summary>按类型 + 关键词过滤台账，过滤后只取前 PageSize 条进入可视窗口。</summary>
     private void ApplyFilter()
     {
         IEnumerable<TaskLedgerEntry> q = _ledger;
@@ -133,8 +141,10 @@
         _visible = _filtered.Take(PageSize).ToList();
     }
 
+    /// <summary>分页加载：可视窗口再扩一页（防止大数据量一次渲染卡顿）。</summary>
     private void LoadMore() => _visible = _filtered.Take(_visible.Count + PageSize).ToList();
 
+    /// <summary>任务类型码 → 显示文本：借助 TaskTypeRegistry 注册表附加中文标签，未知码原样显示。</summary>
     private static string TypeLabel(string code)
     {
         var t = TaskTypeRegistry.All.FirstOrDefault(x => x.Value == code);

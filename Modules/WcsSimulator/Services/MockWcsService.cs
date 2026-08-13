@@ -36,11 +36,16 @@ public class MockWcsService : IWcsService
 
     // ── 库存查询 ──
 
-    /// <summary>向 GRCS 的 /api/Cargo 查询容器库存（GET，支持 Code / HomeStationScene / IsLocked 过滤）。</summary>
+    /// <summary>
+    /// 向 GRCS 的 /api/Cargo 查询容器库存（GET，支持 Code / HomeStationScene / IsLocked 过滤 + 分页）。
+    /// GRCS 侧原生支持 pageNo/pageSize 并返回 totalCount，前端分页展示只发前 200 条/页；
+    /// 需要全量数据的业务调用方保持默认 pageSize=2000（与优化前行为一致）。
+    /// </summary>
     public async Task<(bool Ok, int StatusCode, string Json)> QueryCargoInventoryAsync(
-        string baseUrl, string? code = null, string? scene = null, string? locked = null)
+        string baseUrl, string? code = null, string? scene = null, string? locked = null,
+        int pageNo = 1, int pageSize = 2000)
     {
-        var url = $"{baseUrl.TrimEnd('/')}/api/Cargo?pageNo=1&pageSize=2000";
+        var url = $"{baseUrl.TrimEnd('/')}/api/Cargo?pageNo={pageNo}&pageSize={pageSize}";
         if (!string.IsNullOrWhiteSpace(code)) url += $"&SearchContextParams[Code]={Uri.EscapeDataString(code)}";
         if (!string.IsNullOrWhiteSpace(scene)) url += $"&SearchContextParams[HomeStationScene]={Uri.EscapeDataString(scene)}";
         if (!string.IsNullOrWhiteSpace(locked)) url += $"&SearchContextParams[IsLocked]={locked}";
@@ -118,10 +123,15 @@ public class MockWcsService : IWcsService
 
     // ── 任务阶段（WCS 后端管理接口 /api/wcs）──
 
-    /// <summary>查询任务阶段变化事件列表（GET /api/wcs/task-stages）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> GetTaskStageEventsAsync(string baseUrl)
+    /// <summary>
+    /// 查询任务阶段变化事件列表（GET /api/wcs/task-stages）。
+    /// sinceId &gt; 0 时只返回 Id 更大的增量事件（WCS 后端 GetEventsSince，Id 为后端内存自增、单调不回绕），
+    /// 供 TaskStageHub 增量合并；不带 sinceId 时后端返回最近 200 条（全量首拉/周期对账用）。
+    /// </summary>
+    public async Task<(bool Ok, int StatusCode, string Json)> GetTaskStageEventsAsync(string baseUrl, long sinceId = 0)
     {
         var url = $"{baseUrl.TrimEnd('/')}/api/wcs/task-stages";
+        if (sinceId > 0) url += $"?sinceId={sinceId}";
         try
         {
             var resp = await _http.GetAsync(url);

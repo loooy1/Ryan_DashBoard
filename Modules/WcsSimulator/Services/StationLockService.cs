@@ -12,15 +12,13 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 public class StationLockService
 {
     private const string StoreKey = "grcs_station_locks";
-    private const string WcsUrlKey = "grcs_wcs_url";
-    private const string DefaultWcsUrl = "http://localhost:8230";
     private readonly IJSRuntime _js;
     private readonly LocalStoreService _store;
-    private readonly IWcsService _wcs;
+    private readonly TaskStageHub _stageHub;
     private static readonly JsonSerializerOptions Opts = new() { PropertyNameCaseInsensitive = true };
 
-    public StationLockService(IJSRuntime js, LocalStoreService store, IWcsService wcs)
-    { _js = js; _store = store; _wcs = wcs; }
+    public StationLockService(IJSRuntime js, LocalStoreService store, TaskStageHub stageHub)
+    { _js = js; _store = store; _stageHub = stageHub; }
 
     /// <summary>返回当前仍被锁定（流程未完成）的站点；顺带把已完成流程的锁惰性释放。</summary>
     public async Task<HashSet<string>> GetLockedAsync()
@@ -51,17 +49,16 @@ public class StationLockService
         await SaveAsync(map);
     }
 
+    /// <summary>
+    /// 已完成任务号集合：读 TaskStageHub 共享缓存（优化前每次调用全量拉一次 task-stages）。
+    /// 缓存覆盖最近 1000 条事件（旧实现只拉 200 条），锁释放判定反而更准。
+    /// </summary>
     private async Task<HashSet<string>> GetFinishedTaskIdsAsync()
     {
         try
         {
-            var url = _store[WcsUrlKey];
-            if (string.IsNullOrEmpty(url) || url == "null") url = DefaultWcsUrl;
-            var (ok, _, json) = await _wcs.GetTaskStageEventsAsync(url);
-            if (!ok || string.IsNullOrEmpty(json)) return [];
-            var evts = JsonSerializer.Deserialize<List<StageChangeEvent>>(json, Opts) ?? [];
-            return evts.Where(e => string.Equals(e.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase))
-                       .Select(e => e.TaskId ?? "").Where(id => id.Length > 0).ToHashSet();
+            await _stageHub.EnsureStartedAsync();
+            return _stageHub.FinishedTaskIds;
         }
         catch { return []; }
     }

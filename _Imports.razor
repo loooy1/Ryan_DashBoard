@@ -1,3 +1,7 @@
+@* ── 全局 using：所有 .razor 文件自动引入以下命名空间 ──
+   框架基础（Blazor/MudBlazor）在前，本项目命名空间在后；
+   WcsSimulator 模块按 Models/Services/Pages/Extensions 平铺引入，
+   新增模块时在 Modules/ 下建目录并在此补充对应命名空间。 *@
 @using System.Net.Http
 @using System.Net.Http.Json
 @using Microsoft.AspNetCore.Components.Forms

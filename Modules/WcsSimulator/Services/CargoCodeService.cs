@@ -10,15 +10,20 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 /// </summary>
 public class CargoCodeService
 {
-    private const string StoreKey = "grcs_cargo_codes";
-    private readonly IJSRuntime _js;
-    private readonly LocalStoreService _store;
-    private static readonly JsonSerializerOptions Opts = new() { PropertyNameCaseInsensitive = true };
+    private const string StoreKey = "grcs_cargo_codes";   // localStorage 键：段1 TaskId → 货物码 的映射
+    private readonly IJSRuntime _js;                      // JS 互操作（写 localStorage 用）
+    private readonly LocalStoreService _store;            // 统一本地存储封装（与各页面读写同一份数据）
+    private static readonly JsonSerializerOptions Opts = new() { PropertyNameCaseInsensitive = true }; // 大小写不敏感，兼容旧版/手改数据
 
     public CargoCodeService(IJSRuntime js, LocalStoreService store)
-    { _js = js; _store = store; }
+    { _js = js; _store = store; } // 由 DI 注入
 
-    /// <summary>取段1 任务对应的货物码；没有则自动生成一个并持久化（先读后写，多处调用得到同一码）。</summary>
+    /// <summary>
+    /// 取段1 任务对应的货物码；没有则自动生成一个并持久化（先读后写，多处调用得到同一码）。
+    /// 生成规则 SimCargo_ + UTC 毫秒时间戳（十六进制），保证唯一。
+    /// 两个入口共用：自动任务服务下发入库段2 前、信号交互页生成到达卡片时（自动模式），
+    /// 二者必须拿到同一个货物码，否则段2 与 container_ready 的容器对不上。
+    /// </summary>
     public async Task<string> EnsureAsync(string seg1TaskId)
     {
         var map = Load();
@@ -29,6 +34,7 @@ public class CargoCodeService
         return code;
     }
 
+    /// <summary>容错读取映射：数据缺失/损坏/格式不符一律返回空字典，不让 localStorage 问题阻断任务流程。</summary>
     private Dictionary<string, string> Load()
     {
         try
