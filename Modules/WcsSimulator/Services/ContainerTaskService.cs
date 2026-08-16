@@ -47,6 +47,7 @@ public class ContainerTaskService
     private string _wcsBaseUrl = DefaultWcsUrl;
     private string _sceneName = "";
     private List<MapStationLite> _mapStations = [];
+    private AutoRangeConfig _range = new();
     private readonly LocalStoreService _store;
     private readonly TaskLedgerService _ledger;
 
@@ -76,8 +77,31 @@ public class ContainerTaskService
                 var cache = JsonSerializer.Deserialize<MapStationCache>(json, Opts);
                 _mapStations = cache?.Stations ?? [];
             }
+            LoadRangeConfig();
         }
         catch { }
+    }
+
+    /// <summary>加载选点范围限制（grcs_auto_range），限定接驳位/储位/分拣台候选池。</summary>
+    private void LoadRangeConfig()
+    {
+        try
+        {
+            var r = _store["grcs_auto_range"];
+            if (!string.IsNullOrEmpty(r) && r != "null")
+                _range = JsonSerializer.Deserialize<AutoRangeConfig>(r, Opts) ?? new AutoRangeConfig();
+        }
+        catch { _range = new AutoRangeConfig(); }
+    }
+
+    /// <summary>在站点池上应用选点范围限制：储位/接驳位/分拣台候选池全部收窄到限定范围。</summary>
+    private void ApplyRange(List<MapStationLite> storages, List<MapStationLite> transferPoints, List<MapStationLite> pickingStations)
+    {
+        if (!_range.Enabled) return;
+        var pool = _range.ApplyTo(_mapStations);
+        storages.RemoveAll(s => !pool.Contains(s));
+        transferPoints.RemoveAll(s => !pool.Contains(s));
+        pickingStations.RemoveAll(s => !pool.Contains(s));
     }
 
     public void ClearLogs() { Logs.Clear(); Changed?.Invoke(); }
@@ -202,6 +226,8 @@ public class ContainerTaskService
         var lockedStations = await _stationLocks.GetLockedAsync();
         var transferPoints = _mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.TransferPoint) != 0).ToList();
         var pickingStations = _mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.PeopleStation) != 0).ToList();
+        // 选点范围限制：用户可在自动化任务页限定接驳位/储位/分拣台候选范围
+        ApplyRange(storages, transferPoints, pickingStations);
         var occupiedMarks = new HashSet<string>(_cachedEmptyPallets.Select(p => p.Station).Concat(_cachedLoadedPallets.Select(p => p.Station)).Concat(_cachedCargos.Select(c => c.Station)).Concat(_cachedPairedCargos.Select(c => c.Station)));
         var emptyStorages = storages.Where(s => !occupiedMarks.Contains(s.Mark) && !lockedStations.Contains(s.Mark)).ToList();
 

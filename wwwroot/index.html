@@ -178,6 +178,17 @@
             for (const k of keys) result[k] = localStorage.getItem(k);
             return JSON.stringify(result);
         };
+        // 获取元素相对视口的边界矩形（地图框选坐标换算用）
+        window.grcsGetElementRect = (el) => {
+            if (!el) return 'null';
+            const r = el.getBoundingClientRect();
+            return JSON.stringify({ left: r.left, top: r.top, width: r.width, height: r.height });
+        };
+        // 捕获指针，使拖拽移出元素后仍能收到 pointermove/pointerup（地图框选用）
+        window.grcsSetPointerCapture = (el, pointerId) => {
+            if (!el) return;
+            try { el.setPointerCapture(pointerId); } catch { }
+        };
     </script>
     <script src="_framework/blazor.webassembly.js"></script>
     <script src="_content/MudBlazor/MudBlazor.min.js"></script>

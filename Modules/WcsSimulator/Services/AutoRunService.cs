@@ -36,6 +36,7 @@ public class AutoRunService
     private string _wcsBaseUrl = DefaultWcsUrl;
     private string _sceneName = "";
     private List<MapStationLite> _mapStations = [];
+    private AutoRangeConfig _range = new();
     private readonly LocalStoreService _store;
     private readonly TaskLedgerService _ledger;
 
@@ -94,8 +95,31 @@ public class AutoRunService
                 var cache = JsonSerializer.Deserialize<MapStationCache>(json, Opts);
                 _mapStations = cache?.Stations ?? [];
             }
+            LoadRangeConfig();
         }
         catch { }
+    }
+
+    /// <summary>加载选点范围限制（grcs_auto_range），限定接驳位/储位/分拣台候选池。</summary>
+    private void LoadRangeConfig()
+    {
+        try
+        {
+            var r = _store["grcs_auto_range"];
+            if (!string.IsNullOrEmpty(r) && r != "null")
+                _range = JsonSerializer.Deserialize<AutoRangeConfig>(r, Opts) ?? new AutoRangeConfig();
+        }
+        catch { _range = new AutoRangeConfig(); }
+    }
+
+    /// <summary>在站点池上应用选点范围限制：储位/接驳位/分拣台候选池全部收窄到限定范围。</summary>
+    private void ApplyRange(List<MapStationLite> storages, List<MapStationLite> transferPoints, List<MapStationLite> pickingStations)
+    {
+        if (!_range.Enabled) return;
+        var pool = _range.ApplyTo(_mapStations);
+        storages.RemoveAll(s => !pool.Contains(s));
+        transferPoints.RemoveAll(s => !pool.Contains(s));
+        pickingStations.RemoveAll(s => !pool.Contains(s));
     }
 
     private async Task PollLoopAsync()
@@ -110,6 +134,8 @@ public class AutoRunService
 
     private async Task PollOnceAsync()
     {
+        LoadRangeConfig(); // 每轮刷新选点范围（运行中改范围下轮生效）
+
         // 1. 查库存
         var (ok, httpCode, json) = await _wcs.QueryCargoInventoryAsync(_baseUrl, scene: _sceneName);
         if (!ok || string.IsNullOrEmpty(json))
@@ -117,11 +143,16 @@ public class AutoRunService
         var result = JsonSerializer.Deserialize<CargoQueryResult>(json, Opts);
         var records = result?.Data?.Records ?? [];
 
-        // 2. 配对分析：只认储位内的空托/带货托（接驳位、分拣台等非储位站点上的容器不参与，
+        // 3. 站点池（先建池并应用选点范围，再用范围储位集做库存判定，保证范围外托盘不被下发）
+        var storages = _mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.StorageLocation) != 0).ToList();
+        var transferPoints = _mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.TransferPoint) != 0).ToList();
+        var pickingStations = _mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.PeopleStation) != 0).ToList();
+        // 选点范围限制：用户可在自动化任务页限定接驳位/储位/分拣台候选范围
+        ApplyRange(storages, transferPoints, pickingStations);
+
+        // 2. 配对分析：只认（范围内）储位内的空托/带货托（接驳位、分拣台等非储位站点上的容器不参与，
         //    否则段1 搬到接驳位等装货的托盘会被误判为空托而重复下发入库）
-        var storageMarks = new HashSet<string>(_mapStations
-            .Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.StorageLocation) != 0)
-            .Select(s => s.Mark));
+        var storageMarks = new HashSet<string>(storages.Select(s => s.Mark));
         var pallets = new List<(string Code, string Station)>();
         var cargos = new List<(string Code, string Station)>();
         int lockedCnt = 0, loadedCnt = 0;
@@ -142,10 +173,7 @@ public class AutoRunService
         var loadedPallets = pallets.Where(p => cargoMarks.Contains(p.Station)).ToList();
         var pairedCargos = cargos.Where(c => palletMarks.Contains(c.Station)).ToList();
 
-        // 3. 站点池 + 终点储位锁定过滤
-        var storages = _mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.StorageLocation) != 0).ToList();
-        var transferPoints = _mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.TransferPoint) != 0).ToList();
-        var pickingStations = _mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.PeopleStation) != 0).ToList();
+        // 3b. 终点储位锁定过滤
         var lockedStations = await _stationLocks.GetLockedAsync();
         var occupiedMarks = new HashSet<string>(pallets.Select(p => p.Station).Concat(cargos.Select(c => c.Station)));
         var emptyStorages = storages.Where(s => !occupiedMarks.Contains(s.Mark) && !lockedStations.Contains(s.Mark)).ToList();

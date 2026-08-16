@@ -474,9 +474,15 @@
     private bool _storageListenerRegistered;
     private System.Threading.Timer? _refreshDebounceTimer;
 
+    // ── 进入申请徽章轮询（TaskStageHub 只管 task-stages，status/events 无共享轮询源，页面级兜底）──
+    private const int AdmPollMs = 3000;
+    private System.Threading.Timer? _admPollTimer;
+    private bool _admPolling;
+
     protected override async Task OnInitializedAsync()
     {
         SignalAuto.Changed += OnSignalChanged; // 订阅信号自动确认服务（切到其他模块后服务继续后台运行，页面销毁时在 Dispose 退订）
+        StageHub.Changed += OnHubChanged; // 订阅共享轮询器：后端有新阶段事件（含 FINISHED）即防抖重建，替代手动刷新
 
         // 读取 localStorage 状态（内存缓存，同步读取，无 JS 边界）
         try
@@ -515,6 +521,27 @@
             _storageListenerId = await Js.InvokeAsync<string>("grcsRegisterStorageListener", DotNetObjectReference.Create(this), "si_" + Guid.NewGuid().ToString("N"));
             _storageListenerRegistered = true;
         }
+
+        // 进入申请轻量轮询：GRCS 重发进站申请后，徽章最迟 3s 内跟上（页面打开期间运行，Dispose 停止）
+        _admPollTimer = new System.Threading.Timer(_ => PollAdmittanceTick(), null, AdmPollMs, AdmPollMs);
+    }
+
+    /// <summary>每轮拉一次状态（待确认数），展开时顺带拉事件表。防抖/防重叠，UI 更新走调度器。</summary>
+    private void PollAdmittanceTick()
+    {
+        if (_admPolling) return;
+        _admPolling = true;
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                await LoadStatus();
+                if (!IsCollapsed("adm_list")) await LoadEvents();
+                StateHasChanged();
+            }
+            catch { }
+            finally { _admPolling = false; }
+        });
     }
 
     /// <summary>JS storage 事件回调，由 index.html 中的 grcsRegisterStorageListener 调用。</summary>
@@ -543,33 +570,37 @@
         try { await WcsService.SetAdmittanceModeAsync(_wcsBaseUrl, _autoMode); } catch { }
     }
 
-    /// <summary>只刷新当前展开的 section，折叠的不发 HTTP。</summary>
+    /// <summary>刷新页面数据。卡片/徽章为纯内存重建（0 HTTP），折叠的 section 也刷新（header 徽章始终可见）；
+    /// 进入申请的 events 表只有展开时才拉（省一次 HTTP）。</summary>
     private async Task RefreshExpandedSections()
     {
         if (!IsCollapsed("adm_list")) { await LoadStatus(); await LoadEvents(); }
-        if (!IsCollapsed("arrival") || !IsCollapsed("removal") || !IsCollapsed("sorting")) await RefreshAllAsync();
+        await RefreshAllAsync();
     }
 
     private void OnSignalChanged()
     {
         _signalDirty = true;
-        // 立即从 localStorage 刷新确认集合，不等下轮轮询，消除徽章延迟
-        try
+        // 自动确认后立即全量重建（RefreshAllAsync 已 0 HTTP、全内存）：重算待确认徽章 + 刷新行内状态。
+        // 旧实现只重载确认集合不重算徽章，单标签页下徽章会一直停在上次全量刷新的旧值。
+        _ = InvokeAsync(async () =>
         {
-            _confirmedTasks = LoadConfirmedSet("grcs_arrival_confirmed");
-            _confirmedRemovalTasks = LoadConfirmedSet("grcs_removal_confirmed");
-            _sentTasks = LoadConfirmedSet("grcs_ss_sent");
-            _signalDirty = false;
-        }
-        catch { }
-        InvokeAsync(StateHasChanged);
+            await RefreshAllAsync();
+            StateHasChanged();
+        });
     }
+
+    /// <summary>hub 拉到新阶段事件（任务 FINISHED、新卡片可生成）→ 防抖重建，卡片/徽章自动跟上。</summary>
+    private void OnHubChanged() => ScheduleRefresh();
 
     public void Dispose()
     {
         SignalAuto.Changed -= OnSignalChanged;
+        StageHub.Changed -= OnHubChanged;
         _refreshDebounceTimer?.Dispose();
         _refreshDebounceTimer = null;
+        _admPollTimer?.Dispose();
+        _admPollTimer = null;
         if (_storageListenerRegistered && !string.IsNullOrEmpty(_storageListenerId))
             try { Js.InvokeVoidAsync("grcsUnregisterStorageListener", _storageListenerId); } catch { }
         _storageListenerRegistered = false;

@@ -92,7 +92,7 @@ public class LocalStoreService
         // 表单/任务状态
         "grcs_td_state", "grcs_ts_deleted", "grcs_ts_events",
         // 服务数据
-        "grcs_cargo_codes", "grcs_station_locks",
+        "grcs_cargo_codes", "grcs_station_locks", "grcs_auto_range",
         "grcs_cargo_inventory", "grcs_cargo_inventory_at",
         // 地图缓存
         "grcs_map_stations",

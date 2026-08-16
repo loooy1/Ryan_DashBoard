@@ -51,6 +51,64 @@
 </div>
 
 @* ════════════════════════════════════════════════
+   选点范围：限制自动化任务（轮询储位 + 自动容器）的选点范围。
+   配置持久化到 localStorage（grcs_auto_range），两个服务加载时按此过滤候选池。
+   支持 站点类型 + 楼层 + 手动 Mark 白名单（三者 AND）。
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleRange" title="点击折叠/展开">
+        🎯 选点范围
+        <span class="badge @(_range.Enabled ? "badge-ok" : "badge-warn")">@(_range.Enabled ? "已启用" : "未启用")</span>
+        <span class="addr-badge">候选 @_rangePool.Count 个</span>
+        <button class="btn btn-sm @(_range.Enabled ? "btn-danger" : "btn-primary")" @onclick="ToggleRangeEnabled" @onclick:stopPropagation>
+            @(_range.Enabled ? "关闭限制" : "开启限制")
+        </button>
+        <span class="collapse-arrow">@(IsCollapsed("range") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("range"))
+    {
+    <div class="hint-text" style="margin-bottom:8px;">开启后，「自动化」与「自动容器任务下发」只在下述范围内随机选点（接驳位/储位/分拣台）。</div>
+
+    <div class="form-group">
+        <label>站点类型（可多选，不选=不限类型）</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            @foreach (var (bit, name) in MapStationTypeBits.All)
+            {
+                <button class="chip-btn @((_range.TypeFilter & bit) != 0 ? "on" : "")" @onclick="() => ToggleRangeType(bit)">@name</button>
+            }
+        </div>
+    </div>
+
+    <div class="form-group" style="margin-top:6px;">
+        <label>楼层</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="chip-btn @(_range.FloorFilter == 0 ? "on" : "")" @onclick="() => { _range.FloorFilter = 0; SaveRange(); }">全部</button>
+            @foreach (var f in _rangeAvailableFloors)
+            {
+                <button class="chip-btn @(_range.FloorFilter == f ? "on" : "")" @onclick="() => { _range.FloorFilter = f; SaveRange(); }">@f 层</button>
+            }
+        </div>
+    </div>
+
+    <div class="form-group" style="margin-top:6px;">
+        <label>手动指定站点编码（可多个，逗号/空格/换行分隔；与类型/楼层取交集）</label>
+        <textarea @bind="_rangeMarksText" @bind:event="oninput" rows="2" placeholder="留空=不限，如：0100001427, 0100001837"></textarea>
+    </div>
+
+    <div class="hint-text" style="margin-top:4px;">
+        @if (_range.Enabled)
+        {
+            <text>当前限制候选 @_rangePool.Count 个站点：@(string.Join(", ", _rangePool.Take(5).Select(s => s.Mark)))…</text>
+        }
+        else
+        {
+            <text>未启用，自动化任务从全地图随机选点。</text>
+        }
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
    批量移动任务下发
    ── 流程 ── 确定站点来源（手输 / 按类型+楼层筛选）→ 计算候选池
    （_batchPool）→ 随机生成任务预览 → SendBatch 逐条 POST
@@ -221,6 +279,14 @@
         </button>
     </div>
 
+    @if (ContainerRangeWarnings.Count > 0)
+    {
+        <div class="range-warning">
+            ⚠ @string.Join("；", ContainerRangeWarnings)
+            @if (_range.Enabled) { <text>请在「选点范围」中补充对应站点类型。</text> }
+        </div>
+    }
+
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
         <button class="btn btn-outline btn-sm" @onclick="RefreshContainerInventory" disabled="@Container.Busy">📋 查询库存</button>
         <button class="btn btn-primary" @onclick="ExecuteContainerAuto" disabled="@Container.Busy">
@@ -286,6 +352,14 @@
         <button class="btn btn-sm @(Auto.FlowMode == 1 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 1'>🔀 只分拣</button>
         <button class="btn btn-sm @(Auto.FlowMode == 2 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 2'>📤 只出库</button>
     </div>
+
+    @if (AutoRangeWarnings.Count > 0)
+    {
+        <div class="range-warning">
+            ⚠ @string.Join("；", AutoRangeWarnings)
+            @if (_range.Enabled) { <text>请在「选点范围」中补充对应站点类型。</text> }
+        </div>
+    }
 
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
         <button class="btn @(Auto.Running ? "btn-danger" : "btn-primary")" @onclick="ToggleAuto">
@@ -354,7 +428,7 @@
     private record BatchTaskItem(int No, string Mark, int StationType);
 
     // ── 卡片折叠状态（持久化到 localStorage 键 grcs_auto_collapsed）──
-    private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["batch"] = true, ["container"] = true, ["auto"] = true };
+    private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["range"] = true, ["batch"] = true, ["container"] = true, ["auto"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
     {
@@ -362,9 +436,65 @@
         await LocalStore.SetAsync(Js, "grcs_auto_collapsed", JsonSerializer.Serialize(_collapsed));
     }
     private Task ToggleConn() => Toggle("conn");
+    private Task ToggleRange() => Toggle("range");
     private Task ToggleBatch() => Toggle("batch");
     private Task ToggleContainer() => Toggle("container");
     private Task ToggleAutoSection() => Toggle("auto");
+
+    // ── 选点范围（grcs_auto_range：AutomationTasks / AutoRunService / ContainerTaskService 共享）──
+    private AutoRangeConfig _range = new();
+    private string _rangeMarksText = "";
+    /// <summary>范围过滤后的候选池（实时预览用）。</summary>
+    private List<MapStationLite> _rangePool => _range.ApplyTo(_mapStations);
+    /// <summary>可选楼层：启用站点中符合当前类型过滤的楼层去重排序。</summary>
+    private List<int> _rangeAvailableFloors => _mapStations
+        .Where(s => s.StaEnable && (_range.TypeFilter == 0 || (s.StationType & _range.TypeFilter) != 0))
+        .Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
+
+    // ── 范围内的各类候选站点（与服务 ApplyRange 同口径：StaEnable + 类型位 + 范围过滤）──
+    private List<MapStationLite> _rangeStorages => _range.ApplyTo(_mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.StorageLocation) != 0));
+    private List<MapStationLite> _rangeTransferPoints => _range.ApplyTo(_mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.TransferPoint) != 0));
+    private List<MapStationLite> _rangePickingStations => _range.ApplyTo(_mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.PeopleStation) != 0));
+
+    /// <summary>自动容器任务按当前流程缺的必需站点类型（空 = 可正常下发）。</summary>
+    private List<string> ContainerRangeWarnings
+    {
+        get
+        {
+            var w = new List<string>();
+            if (_containerFlow == 1 || _containerFlow == 2)
+            {
+                if (_rangeTransferPoints.Count == 0) w.Add("选点范围内没有接驳位，入库/出库任务无法下发");
+                if (_rangeStorages.Count == 0) w.Add("选点范围内没有储位，无法确定目标货位");
+            }
+            else if (_containerFlow == 3)
+            {
+                if (_rangePickingStations.Count == 0) w.Add("选点范围内没有分拣台，分拣任务无法下发");
+            }
+            return w;
+        }
+    }
+
+    /// <summary>自动化（轮询储位）按当前 FlowMode 缺的必需站点类型（空 = 可正常下发）。</summary>
+    private List<string> AutoRangeWarnings
+    {
+        get
+        {
+            var w = new List<string>();
+            if (_rangeTransferPoints.Count == 0) w.Add("选点范围内没有接驳位，空托入库/带货出库无法下发");
+            if (_rangeStorages.Count == 0) w.Add("选点范围内没有储位，无法确定目标货位");
+            if (Auto.FlowMode != 2 && _rangePickingStations.Count == 0) w.Add("选点范围内没有分拣台，分拣流程无法下发");
+            return w;
+        }
+    }
+
+    private void ToggleRangeEnabled() { _range.Enabled = !_range.Enabled; SaveRange(); }
+    private void ToggleRangeType(int bit) { _range.TypeFilter ^= bit; SaveRange(); }
+    private void SaveRange()
+    {
+        _range.Marks = AutoRangeConfig.ParseMarks(_rangeMarksText);
+        _ = LocalStore.SetAsync(Js, "grcs_auto_range", JsonSerializer.Serialize(_range));
+    }
 
     // ── 自动化（运行状态/日志在 AutoRunService 单例中，跨导航存活；页面只订阅刷新。
     //    服务内部定时器自己管理生命周期，页面销毁时退订 Changed 事件即可）──
@@ -432,6 +562,18 @@
             var cjson = LocalStore["grcs_auto_collapsed"];
             if (!string.IsNullOrEmpty(cjson) && cjson != "null")
                 _collapsed = JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
+        }
+        catch { }
+
+        // 选点范围配置恢复（类型/楼层/Mark 白名单）
+        try
+        {
+            var rjson = LocalStore["grcs_auto_range"];
+            if (!string.IsNullOrEmpty(rjson) && rjson != "null")
+            {
+                _range = JsonSerializer.Deserialize<AutoRangeConfig>(rjson, JsonOpts) ?? new AutoRangeConfig();
+                _rangeMarksText = string.Join(", ", _range.Marks);
+            }
         }
         catch { }
     }
