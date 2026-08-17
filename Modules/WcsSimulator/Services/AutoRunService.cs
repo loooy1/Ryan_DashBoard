@@ -22,7 +22,7 @@ public class AutoRunService
 
     public bool Running { get; private set; }
     public int Interval { get; set; } = 5;
-    public int FlowMode { get; set; }              // 带货托任务：0=出库/分拣交替，1=只分拣，2=只出库
+    public int FlowMode { get; set; }              // 带货托任务：0=出库/分拣交替，1=只分拣，2=只出库，3=无任务（只空托入库）
     public int Dispatched { get; private set; }
     public List<AutoLogEntry> Logs { get; } = [];
 
@@ -187,6 +187,25 @@ public class AutoRunService
             found++;
             _ = ProcessInboundAsync(code, loc, transferPoints, emptyStorages);
         }
+
+        // FlowMode 3「无任务」：空托照常入库；入库产生的带货托不再触发出库/分拣，只留在储位。
+        // 纯跳过（不加入 _handled），避免"无任务"模式把带货托占用而阻塞其他模式下轮恢复。
+        if (FlowMode == 3)
+        {
+            var skipped = loadedPallets.Count;
+            string msg3;
+            if (found > 0)
+                msg3 = "轮询完成：发现 " + found + " 个空托开始入库（带货托 " + skipped + " 个按「无任务」跳过）";
+            else if (busy > 0)
+                msg3 = "轮询完成：无新空托可入库（" + busy + " 个已在处理中；带货托 " + skipped + " 个按「无任务」跳过）";
+            else if (skipped > 0)
+                msg3 = "轮询完成：储位内无空托可入库（带货托 " + skipped + " 个按「无任务」跳过）";
+            else
+                msg3 = "轮询完成：储位内未发现可下发的空托" + (lockedCnt > 0 ? "（跳过锁定 " + lockedCnt + "）" : "");
+            Log(msg3, found == 0 ? "#94a3b8" : "#4ade80");
+            return;
+        }
+
         foreach (var (code, loc) in loadedPallets)
         {
             if (_handled.Contains(code)) { busy++; continue; }

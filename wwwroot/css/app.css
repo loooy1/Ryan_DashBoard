@@ -305,6 +305,13 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
     color: #f87171; font-size: 0.75rem; line-height: 1.6;
 }
 
+/* ── 范围选点已开启的醒目标识条（青色系，区别于红色 range-warning）── */
+.range-banner {
+    margin: 10px 0; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid #0e7490; background: rgba(14, 116, 144, 0.10);
+    color: #38bdf8; font-size: 0.75rem; line-height: 1.6;
+}
+
 /* ── Task card ── */
 .task-card {
     background: #0f172a; border: 1px solid #334155; border-radius: 12px;
@@ -381,6 +388,51 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
 
 /* ── 地图文件选择按钮 hover 效果 ── */
 .map-file-btn:hover button { border-color: #38bdf8 !important; color: #38bdf8 !important; }
+
+/* ── 站点地图框选器（StationMapPicker）── */
+.smp-overlay {
+    position: fixed; inset: 0; z-index: 200;
+    background: rgba(2, 6, 23, 0.78);
+    display: flex; align-items: center; justify-content: center;
+}
+.smp-modal {
+    width: min(1100px, 94vw); height: min(720px, 92vh);
+    background: #0f172a; border: 1px solid #334155; border-radius: 14px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+    display: flex; flex-direction: column; overflow: hidden;
+}
+.smp-toolbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid #334155; flex-wrap: wrap;
+}
+.smp-title { font-weight: 600; font-size: 0.85rem; color: #e2e8f0; white-space: nowrap; }
+.smp-floors { display: flex; gap: 6px; flex-wrap: wrap; }
+.smp-count {
+    margin-left: auto; font-size: 0.72rem; color: #38bdf8; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.smp-canvas-wrap { flex: 1; position: relative; background: #0b1220; overflow: hidden; user-select: none; }
+.smp-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; display: block; }
+.smp-canvas.grabbing { cursor: grabbing; }
+.smp-tooltip {
+    position: absolute; pointer-events: none; z-index: 5;
+    background: #1e293b; border: 1px solid #334155; color: #e2e8f0;
+    font-size: 0.7rem; padding: 6px 10px; border-radius: 8px;
+    white-space: nowrap; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.smp-tt-mark { font-family: Consolas, monospace; font-weight: 600; }
+.smp-tt-type { color: #94a3b8; }
+.smp-legend {
+    display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+    padding: 8px 16px; border-top: 1px solid #1e293b; background: #0c1222;
+    min-height: 34px;
+}
+.smp-legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; color: #94a3b8; }
+.smp-legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.smp-hint {
+    font-size: 0.68rem; color: #64748b; padding: 6px 16px;
+    border-top: 1px solid #1e293b; background: #0c1222;
+}
 
 #blazor-error-ui { color-scheme: dark; background: #451a1a; bottom: 0; box-shadow: 0 -1px 2px #00000033; display: none; left: 0; padding: 0.6rem 1.25rem; position: fixed; width: 100%; z-index: 1000; }
 #blazor-error-ui .dismiss { cursor: pointer; position: absolute; right: 0.75rem; top: 0.5rem; }

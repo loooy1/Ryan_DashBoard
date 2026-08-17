@@ -146,6 +146,20 @@ public class ContainerTaskService
         var resultMsg = "";
 
         LoadConfig();
+
+        // 与 AutoRunService 同口径：只认（范围内）储位上的库存；接驳位/分拣台等非储位站点上的
+        // 流程中托盘不参与配对（否则段1 搬到接驳位装货的托盘会被误判为空托而重复下发）。
+        // 范围开启时：_range.ApplyTo(_mapStations) 得到范围池 → 只保留裸 Mark 在范围储位集内的记录。
+        var storageMarks = _mapStations
+            .Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.StorageLocation) != 0)
+            .Select(s => s.Mark)
+            .ToHashSet();
+        if (_range.Enabled)
+        {
+            var pool = _range.ApplyTo(_mapStations).Select(s => s.Mark).ToHashSet();
+            storageMarks.IntersectWith(pool);
+        }
+
         try
         {
             var (ok, _, json) = await _wcs.QueryCargoInventoryAsync(_baseUrl, scene: _sceneName);
@@ -162,10 +176,13 @@ public class ContainerTaskService
                         if (c.IsLoaded) { loaded++; continue; }
                         var loc = c.CurrentStationCode;
                         if (string.IsNullOrEmpty(c.Code) || string.IsNullOrEmpty(loc)) { nocode++; skippedCodes.Add((c.Code ?? "null") + "@" + (loc ?? "null")); continue; }
+                        // 库存站点码带 _0/_1 后缀，归一化为裸 Mark 再缓存（配对/占用判断随之修复）
+                        var stationCode = loc.ToMark();
+                        if (!storageMarks.Contains(stationCode)) continue; // 非储位（接驳位/分拣台等）或范围外跳过
                         if (c.IsPallet())
-                            allPallets.Add((c.Code, loc));
+                            allPallets.Add((c.Code, stationCode));
                         else if (c.IsCargo())
-                            allCargos.Add((c.Code, loc));
+                            allCargos.Add((c.Code, stationCode));
                     }
                     resultMsg = "总数 " + result.Data.Records.Count + " ";
                     if (locked > 0 || loaded > 0 || nocode > 0)
@@ -178,7 +195,7 @@ public class ContainerTaskService
         }
         catch (Exception ex) { Log("❌ 库存查询异常：" + ex.Message, "#f87171"); }
 
-        // 区分空托 / 带货托 / 货物
+        // 区分空托 / 带货托 / 货物（Station 均为归一化后的裸 Mark）
         var cargoMarks = new HashSet<string>(allCargos.Select(c => c.Station));
         var palletMarks = new HashSet<string>(allPallets.Select(p => p.Station));
         _cachedEmptyPallets = allPallets.Where(p => !cargoMarks.Contains(p.Station)).ToList();
@@ -191,8 +208,9 @@ public class ContainerTaskService
         Cargos = _cachedCargos.Count;
         PairedCargos = _cachedPairedCargos.Count;
 
-        Status = resultMsg + "空托 " + EmptyPallets + " / 带货托 " + LoadedPallets + " / 货物 " + Cargos + " / 配对货 " + PairedCargos;
-        Log("库存查询完成：空托 " + EmptyPallets + " / 带货托 " + LoadedPallets + " / 货物 " + Cargos + " / 配对货 " + PairedCargos, "#4ade80");
+        var scopeText = _range.Enabled ? "范围内" : "全图";
+        Status = resultMsg + scopeText + " 空托 " + EmptyPallets + " / 带货托 " + LoadedPallets + " / 货物 " + Cargos + " / 任务可用货物 " + PairedCargos;
+        Log("库存查询完成（" + scopeText + "）：空托 " + EmptyPallets + " / 带货托 " + LoadedPallets + " / 货物 " + Cargos + " / 任务可用货物 " + PairedCargos, "#4ade80");
         Changed?.Invoke();
         return Status;
     }
@@ -212,7 +230,7 @@ public class ContainerTaskService
             await RefreshInventoryAsync();
 
         var flowName = flow switch { 1 => "空托盘入库", 2 => "带货托盘出库", _ => "带货托盘分拣" };
-        Log("🚀 开始执行：" + flowName + " × " + count + "（间隔 " + interval + " s），空托 " + EmptyPallets + " / 带货托 " + LoadedPallets + " / 配对货 " + PairedCargos, "#60a5fa");
+        Log("🚀 开始执行：" + flowName + " × " + count + "（间隔 " + interval + " s），空托 " + EmptyPallets + " / 带货托 " + LoadedPallets + " / 任务可用货物 " + PairedCargos, "#60a5fa");
 
         Busy = true; Done = 0; Total = count;
         Status = "";
@@ -290,7 +308,7 @@ public class ContainerTaskService
                 }
                 else // 分拣
                 {
-                    if (pairedCargos.Count == 0) { var m2 = "#" + (i + 1) + " 无可用配对货"; errors.Add(m2); Log("⚠ " + m2, "#fbbf24"); continue; }
+                    if (pairedCargos.Count == 0) { var m2 = "#" + (i + 1) + " 无可用任务货物"; errors.Add(m2); Log("⚠ " + m2, "#fbbf24"); continue; }
                     if (pickingStations.Count == 0) { var m2 = "#" + (i + 1) + " 无人工分拣台"; errors.Add(m2); Log("⚠ " + m2, "#fbbf24"); continue; }
                     var cargo = pairedCargos[rand.Next(pairedCargos.Count)];
                     var pickSt = pickingStations[rand.Next(pickingStations.Count)];

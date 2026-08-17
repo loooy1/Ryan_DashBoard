@@ -91,7 +91,17 @@
     </div>
 
     <div class="form-group" style="margin-top:6px;">
-        <label>手动指定站点编码（可多个，逗号/空格/换行分隔；与类型/楼层取交集）</label>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+            <label style="margin:0;">手动指定站点编码（可多个，逗号/空格/换行分隔；与类型/楼层取交集）</label>
+            <div style="display:flex;gap:6px;align-items:center;">
+                <button class="btn btn-outline btn-sm" @onclick="ClearRangeMarks" title="清空手动指定的站点">🧹 清空</button>
+                <button class="btn btn-outline btn-sm" @onclick="OpenStationMapPicker"
+                        disabled="@(_mapStations.Count == 0)"
+                        title="@(_mapStations.Count == 0 ? "需先在地图信息页加载地图数据" : "按 XY 坐标散点图框选站点，确定后写回本输入框")">
+                    🗺️ 地图框选
+                </button>
+            </div>
+        </div>
         <textarea @bind="_rangeMarksText" @bind:event="oninput" rows="2" placeholder="留空=不限，如：0100001427, 0100001837"></textarea>
     </div>
 
@@ -109,280 +119,213 @@
 </div>
 
 @* ════════════════════════════════════════════════
-   批量移动任务下发
-   ── 流程 ── 确定站点来源（手输 / 按类型+楼层筛选）→ 计算候选池
-   （_batchPool）→ 随机生成任务预览 → SendBatch 逐条 POST
-   GRCS /api/RawOrder/ChangeFloor，按 _batchInterval 秒节流
-   ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleBatch" title="点击折叠/展开">
-        📦 批量移动任务下发
-        <span class="badge-info">统一自动分配车辆</span>
-        <span class="collapse-arrow">@(IsCollapsed("batch") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("batch"))
-    {
-
-    @* 站点来源模式 *@
-    <div style="height:200px;overflow:visible;">
-    <div class="form-group">
-        <label>站点来源</label>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-            <button class="chip-btn @(_batchSource == "manual" ? "on" : "")" @onclick="SetBatchSourceManual">✍️ 手输站点</button>
-            <button class="chip-btn @(_batchSource == "type" ? "on" : "")" @onclick="SetBatchSourceType">🏷️ 按类型选择</button>
-        </div>
-    </div>
-
-    @if (_batchSource == "manual")
-    {
-        <div class="form-group">
-            <label>站点编码（多个用 逗号/空格/换行 分隔）</label>
-            <textarea @bind="_batchManualSites" @bind:event="oninput" rows="2" placeholder="0100001427, 0100001837&#10;0100001806"></textarea>
-            <div class="hint-text" style="margin-top:4px;">
-                已识别 @_manualSites.Count 个站点
-                @if (_mapStations.Count > 0) { <text>· 其中 @(_batchPool.Count) 个存在于地图数据</text> }
-            </div>
-        </div>
-    }
-    else
-    {
-        <div class="form-group">
-            <label>选择站点类型（可多选）</label>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                @foreach (var (bit, name) in MapStationTypeBits.All)
-                {
-                    <button class="chip-btn @((_batchTypeFilter & bit) != 0 ? "on" : "")" @onclick="() => ToggleBatchType(bit)">@name</button>
-                }
-            </div>
-        </div>
-        <div class="form-group" style="margin-top:6px;">
-            <label>选择层数</label>
-            <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                <button class="chip-btn @(_batchFloorFilter == 0 ? "on" : "")" @onclick="() => _batchFloorFilter = 0">全部</button>
-                @foreach (var f in _availableFloors)
-                {
-                    <button class="chip-btn @(_batchFloorFilter == f ? "on" : "")" @onclick="() => _batchFloorFilter = f">@f 层</button>
-                }
-            </div>
-        </div>
-        <div class="hint-text" style="margin-top:4px;">
-            @if (_batchPool.Count > 0)
-            {
-                <text>候选池 @_batchPool.Count 个：@string.Join(", ", _batchPool.Take(3).Select(s => s.Mark)) …</text>
-            }
-            else if (_batchTypeFilter != 0)
-            {
-                <text>不存在当前类型站点</text>
-            }
-            else
-            {
-                <text>请先选择类型和层数</text>
-            }
-        </div>
-    }
-    </div>
-
-    <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
-
-    @* 执行次数 + 优先级 + 名称前缀 *@
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;">
-        <div class="form-group" style="flex:1;min-width:100px;max-width:140px;">
-            <label>执行次数</label>
-            <input type="number" @bind="_batchCount" min="1" max="500" />
-        </div>
-        <div class="form-group" style="flex:1;min-width:90px;max-width:120px;">
-            <label>下发间隔(秒)</label>
-            <input type="number" @bind="_batchInterval" min="0" max="60" step="1">
-        </div>
-        <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
-            <label>优先级 (0-1000)</label>
-            <div style="display:flex;align-items:center;gap:10px;">
-                <input type="range" min="0" max="1000" step="10" @bind="_batchPriority" style="flex:1;">
-                <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_batchPriority</span>
-            </div>
-        </div>
-        <div class="form-group" style="flex:1;min-width:160px;max-width:260px;">
-            <label>OrderId 前缀</label>
-            <input type="text" @bind="_batchOrderIdPrefix" placeholder="Simulate_MoveOnly_">
-        </div>
-    </div>
-
-    <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;">
-        <button class="btn btn-primary" @onclick="GenerateBatch" disabled="@_batchSending">🎲 随机生成 @_batchCount 个任务</button>
-        <button class="btn btn-outline" @onclick="ClearBatch">🧹 清空</button>
-    </div>
-
-    @if (_generatedTasks.Count > 0)
-    {
-        <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;">
-            <span class="badge-info">候选池 @_batchPool.Count 个 → 已生成 @_generatedTasks.Count 个任务</span>
-            <button class="btn btn-outline btn-sm" @onclick="GenerateBatch">🔄 重新生成</button>
-        </div>
-
-        @* 生成的任务预览 *@
-        <div style="max-height:200px;overflow-y:auto;margin-top:8px;border:1px solid #334155;border-radius:8px;background:#0b1220;">
-            @foreach (var t in _generatedTasks)
-            {
-                <div style="display:flex;justify-content:space-between;gap:10px;padding:5px 10px;border-bottom:1px solid #1e293b;font-size:0.75rem;">
-                    <span style="color:#64748b;">#@t.No</span>
-                    <span style="font-family:Consolas,monospace;color:#e2e8f0;">@t.Mark</span>
-                    <span style="color:#94a3b8;">@TypeLabel(t.StationType)</span>
-                </div>
-            }
-        </div>
-
-        <div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-            <button class="btn btn-primary" @onclick="SendBatch" disabled="@_batchSending">
-                @(_batchSending ? $"⏳ 下发中 {_batchSent}/{_batchTotal} ..." : "🚀 批量下发")
-            </button>
-            <span class="hint-text" style="margin:0;">逐条调用 ChangeFloor 接口下发</span>
-        </div>
-    }
-    }
-</div>
-
-@* ════════════════════════════════════════════════
-   自动容器任务下发（状态托管到 ContainerTaskService，切模块不中断）
-   ── 说明 ── 两段式自动任务（入库段1+段2 / 出库段1+段2 / 分拣）由
-   ContainerTaskService 按场景编排下发；库存缓存与执行日志保存在服务内，
-   本页通过 Container.Changed 事件订阅刷新，切走再回来仍然可见
-   ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleContainer" title="点击折叠/展开">
-        📦 自动容器任务下发
-        <span class="badge-info">两段式自动任务 · 跨模块执行</span>
-        <span class="collapse-arrow">@(IsCollapsed("container") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("container"))
-    {
-
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:100px;max-width:140px;">
-            <label>任务数量</label>
-            <input type="number" @bind="_containerCount" min="1" max="100" />
-        </div>
-        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
-            <label>下发间隔(秒)</label>
-            <input type="number" @bind="_containerInterval" min="0" max="30" step="1">
-        </div>
-    </div>
-
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
-        <button class="btn @(_containerFlow == 1 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 1'>
-            📥 空托盘入库
-        </button>
-        <button class="btn @(_containerFlow == 2 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 2'>
-            📤 带货托盘出库
-        </button>
-        <button class="btn @(_containerFlow == 3 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 3'>
-            🔀 带货托盘分拣
-        </button>
-    </div>
-
-    @if (ContainerRangeWarnings.Count > 0)
-    {
-        <div class="range-warning">
-            ⚠ @string.Join("；", ContainerRangeWarnings)
-            @if (_range.Enabled) { <text>请在「选点范围」中补充对应站点类型。</text> }
-        </div>
-    }
-
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-        <button class="btn btn-outline btn-sm" @onclick="RefreshContainerInventory" disabled="@Container.Busy">📋 查询库存</button>
-        <button class="btn btn-primary" @onclick="ExecuteContainerAuto" disabled="@Container.Busy">
-            @(Container.Busy ? $"⏳ 执行中 {Container.Done}/{Container.Total} ..." : "🚀 执行")
-        </button>
-    </div>
-
-    @* 库存缓存（查询后显示，切换模块再回来仍然可见） *@
-    @if (Container.EmptyPallets > 0 || Container.LoadedPallets > 0 || Container.Cargos > 0)
-    {
-        <div class="hint-text" style="margin-top:6px;">
-            库存缓存：空托 @Container.EmptyPallets / 带货托 @Container.LoadedPallets / 货物 @Container.Cargos / 配对货 @Container.PairedCargos
-        </div>
-    }
-
-    @* 执行日志（切模块回来仍然可见） *@
-    @if (Container.Logs.Count > 0)
-    {
-        <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-            <span class="badge-info" style="margin-bottom:6px;">执行日志</span>
-            <button class="btn btn-outline btn-sm" @onclick="ClearContainerLogs" disabled="@Container.Busy" style="margin-bottom:6px;">🧹 清空日志</button>
-        </div>
-        <div style="max-height:260px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
-            @foreach (var log in Container.Logs)
-            {
-                <div style="color:@log.Color;">@log.Time @log.Message</div>
-            }
-        </div>
-    }
-
-    }
-</div>
-
-@* ════════════════════════════════════════════════
-   自动化（轮询储位自动下发）
-   ── 说明 ── AutoRunService 按 Interval 秒轮询储位：发现空托 → 下发入库，
-   带货托按 FlowMode（出库/分拣交替、只分拣、只出库）下发；
-   任务完成后自动解除占用，下轮可再次发现。运行状态与日志在服务内，
-   页面通过 Auto.Changed 事件订阅刷新
+   自动化（轮询储位 / 批量任务 / 纯移动任务，单卡片三模式）
+   ── 说明 ── 本质是同一套两段式容器任务（入库/出库/分拣）的两种触发方式：
+   轮询发现（AutoRunService，按 Interval 秒轮询储位）+ 一次性批量（ContainerTaskService），
+   外加批量纯移动任务（MOVE_ONLY，候选池 = 选点范围，逐条 POST ChangeFloor）。
+   运行状态与日志在各自服务内，页面通过 Auto/Container.Changed 事件订阅刷新，切走再回来仍然可见。
+   轮询与批量互斥启动（防并发撞库存）；纯移动任务候选池受「选点范围」约束。
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleAutoSection" title="点击折叠/展开">
-        🤖 自动化
-        <span class="badge-info">轮询储位 · 自动下发</span>
+        🤖 自动化 · 轮询储位 / 批量任务 / 纯移动
+        <span class="badge-info">两段式容器 + MOVE_ONLY</span>
         <span class="collapse-arrow">@(IsCollapsed("auto") ? "▸ 展开" : "▾ 收起")</span>
     </div>
     @if (!IsCollapsed("auto"))
     {
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
-            <label>轮询间隔(秒)</label>
-            <input type="number" @bind="Auto.Interval" min="1" max="60" step="1" />
-        </div>
-        <div class="hint-text" style="padding-bottom:6px;">
-            发现空托 → 入库；任务完成后自动解除占用，下轮可再次发现
-        </div>
-    </div>
-
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">
-        <span class="hint-text" style="padding-bottom:4px;align-self:center;">带货托任务：</span>
-        <button class="btn btn-sm @(Auto.FlowMode == 0 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 0'>🔀 出库/分拣交替</button>
-        <button class="btn btn-sm @(Auto.FlowMode == 1 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 1'>🔀 只分拣</button>
-        <button class="btn btn-sm @(Auto.FlowMode == 2 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 2'>📤 只出库</button>
-    </div>
-
-    @if (AutoRangeWarnings.Count > 0)
+    @if (_range.Enabled)
     {
-        <div class="range-warning">
-            ⚠ @string.Join("；", AutoRangeWarnings)
-            @if (_range.Enabled) { <text>请在「选点范围」中补充对应站点类型。</text> }
-        </div>
+        <div class="range-banner">🎯 范围选点已开启，仅在限制范围内自动化下发任务（候选 @_rangePool.Count 个站点：储位 @_rangeStorages.Count / 接驳位 @_rangeTransferPoints.Count / 分拣台 @_rangePickingStations.Count）</div>
     }
 
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
-        <button class="btn @(Auto.Running ? "btn-danger" : "btn-primary")" @onclick="ToggleAuto">
-            @(Auto.Running ? "⏹ 停止" : "▶ 启动")
-        </button>
-        <button class="btn btn-outline btn-sm" @onclick="ClearAutoLogs" disabled="@Auto.Running">🧹 清空日志</button>
-        @if (Auto.Running)
-        {
-            <span class="hint-text">⏳ 轮询中... 已下发 @Auto.Dispatched 个任务</span>
-        }
+    @* 模式切换：轮询自动化 / 批量任务 / 纯移动任务 *@
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+        <button class="chip-btn @(_autoMode == "poll" ? "on" : "")" @onclick='() => _autoMode = "poll"'>🔄 轮询自动化</button>
+        <button class="chip-btn @(_autoMode == "batch" ? "on" : "")" @onclick='() => _autoMode = "batch"'>📦 批量任务</button>
+        <button class="chip-btn @(_autoMode == "move" ? "on" : "")" @onclick='() => _autoMode = "move"'>🚚 纯移动任务</button>
     </div>
 
-    <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
-    <div style="max-height:360px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;">
-        @foreach (var log in Auto.Logs)
+    @* 模式内容区：固定最小高度，切换模式时下方分割线/日志区不跳动 *@
+    <div style="min-height:200px;">
+    @if (_autoMode == "poll")
+    {
+        @* ── 轮询模式（AutoRunService）── *@
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+            <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
+                <label>轮询间隔(秒)</label>
+                <input type="number" @bind="Auto.Interval" min="1" max="60" step="1" />
+            </div>
+            <div class="hint-text" style="padding-bottom:6px;">
+                发现空托 → 入库；任务完成后自动解除占用，下轮可再次发现
+            </div>
+        </div>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">
+            <span class="hint-text" style="padding-bottom:4px;align-self:center;">带货托任务：</span>
+            <button class="btn btn-sm @(Auto.FlowMode == 0 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 0'>🔀 出库/分拣交替</button>
+            <button class="btn btn-sm @(Auto.FlowMode == 1 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 1'>🔀 只分拣</button>
+            <button class="btn btn-sm @(Auto.FlowMode == 2 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 2'>📤 只出库</button>
+            <button class="btn btn-sm @(Auto.FlowMode == 3 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 3'>🚫 无任务</button>
+        </div>
+
+        @if (AutoRangeWarnings.Count > 0)
         {
-            <div style="color:@log.Color;">@log.Time @log.Message</div>
+            <div class="range-warning">
+                ⚠ @string.Join("；", AutoRangeWarnings)
+                @if (_range.Enabled) { <text>请在「选点范围」中补充对应站点类型。</text> }
+            </div>
         }
-        @if (Auto.Logs.Count == 0)
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
+            <button class="btn @(Auto.Running ? "btn-danger" : "btn-primary")" @onclick="ToggleAuto" disabled="@Container.Busy">
+                @(Auto.Running ? "⏹ 停止" : "▶ 启动")
+            </button>
+            <button class="btn btn-outline btn-sm" @onclick="ClearAutoLogs" disabled="@Auto.Running">🧹 清空日志</button>
+            @if (Auto.Running)
+            {
+                <span class="hint-text">⏳ 轮询中... 已下发 @Auto.Dispatched 个任务</span>
+            }
+        </div>
+    }
+    else if (_autoMode == "batch")
+    {
+        @* ── 批量模式（ContainerTaskService，原「自动容器任务下发」卡片搬入）── *@
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+            <button class="btn @(_containerFlow == 1 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 1'>
+                📥 空托盘入库
+            </button>
+            <button class="btn @(_containerFlow == 2 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 2'>
+                📤 带货托盘出库
+            </button>
+            <button class="btn @(_containerFlow == 3 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 3'>
+                🔀 带货托盘分拣
+            </button>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
+            <div class="form-group" style="flex:1;min-width:100px;max-width:140px;">
+                <label>任务数量</label>
+                <input type="number" @bind="_containerCount" min="1" max="100" />
+            </div>
+            <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
+                <label>下发间隔(秒)</label>
+                <input type="number" @bind="_containerInterval" min="0" max="30" step="1">
+            </div>
+        </div>
+
+        @if (ContainerRangeWarnings.Count > 0)
         {
-            <div class="hint-text">暂无日志，点击「启动」开始轮询储位</div>
+            <div class="range-warning">
+                ⚠ @string.Join("；", ContainerRangeWarnings)
+                @if (_range.Enabled) { <text>请在「选点范围」中补充对应站点类型。</text> }
+            </div>
+        }
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-outline btn-sm" @onclick="RefreshContainerInventory" disabled="@Container.Busy">📋 查询库存</button>
+            <button class="btn btn-primary" @onclick="ExecuteContainerAuto" disabled="@(Container.Busy || Auto.Running)">
+                @(Container.Busy ? $"⏳ 执行中 {Container.Done}/{Container.Total} ..." : "🚀 执行")
+            </button>
+            @if (Auto.Running)
+            {
+                <span class="hint-text">轮询运行中，批量执行已禁用</span>
+            }
+        </div>
+
+        @* 库存缓存（只在批量模式显示；轮询每轮自查，不需要） *@
+        @if (Container.EmptyPallets > 0 || Container.LoadedPallets > 0 || Container.Cargos > 0)
+        {
+            <div class="hint-text" style="margin-top:6px;">
+                库存缓存@(_range.Enabled ? "（范围内）" : "（全图）")：空托 @Container.EmptyPallets / 带货托 @Container.LoadedPallets / 货物 @Container.Cargos / 任务可用货物 @Container.PairedCargos
+            </div>
+        }
+    }
+    else
+    {
+        @* ── 纯移动任务（候选池=选点范围，一键自动下发）── *@
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
+            <div class="form-group" style="flex:1;min-width:90px;max-width:120px;">
+                <label>下发间隔(秒)</label>
+                <input type="number" @bind="_batchInterval" min="0" max="60" step="1">
+            </div>
+            <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
+                <label>优先级 (0-1000)</label>
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <input type="range" min="0" max="1000" step="10" @bind="_batchPriority" style="flex:1;">
+                    <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_batchPriority</span>
+                </div>
+            </div>
+        </div>
+        <div class="hint-text" style="margin-top:-4px;margin-bottom:10px;">
+            MOVE_ONLY 纯移动任务，统一自动分配车辆；候选站点取自「选点范围」@(_range.Enabled ? "" : "（未开启 = 全图启用站点）")，当前候选 @_batchPool.Count 个。
+        </div>
+
+        <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;">
+            <button class="btn @(_moveRunning ? "btn-danger" : "btn-primary")" @onclick="ToggleMoveDispatch">
+                @(_moveRunning ? "⏹ 停止自动下发" : "▶ 开始自动下发")
+            </button>
+            <span class="hint-text" style="margin:0;">每 @_batchInterval 秒在选点范围内随机抽 1 个站点下发 MOVE_ONLY 任务（自动分配车辆），点击停止结束</span>
+        </div>
+    }
+    </div>
+
+    @* 共用尾部：日志区按当前模式显示对应流（轮询→Auto.Logs，批量→Container.Logs，纯移动→_batchLogs）*@
+    <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span class="badge-info" style="margin-bottom:6px;">@(_autoMode switch { "poll" => "轮询日志", "batch" => "执行日志", _ => "移动任务日志" })</span>
+        @if (_autoMode == "poll")
+        {
+            <button class="btn btn-outline btn-sm" @onclick="ClearAutoLogs" disabled="@Auto.Running" style="margin-bottom:6px;">🧹 清空日志</button>
+        }
+        else if (_autoMode == "batch")
+        {
+            <button class="btn btn-outline btn-sm" @onclick="ClearContainerLogs" disabled="@Container.Busy" style="margin-bottom:6px;">🧹 清空日志</button>
+        }
+        else
+        {
+            <button class="btn btn-outline btn-sm" @onclick="ClearBatch" style="margin-bottom:6px;">🧹 清空日志</button>
         }
     </div>
+    @if (_autoMode == "poll")
+    {
+        <div style="max-height:360px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
+            @foreach (var log in Auto.Logs)
+            {
+                <div style="color:@log.Color;">@log.Time @log.Message</div>
+            }
+            @if (Auto.Logs.Count == 0)
+            {
+                <div class="hint-text">暂无日志，点击「启动」开始轮询储位</div>
+            }
+        </div>
+    }
+    else if (_autoMode == "batch")
+    {
+        <div style="max-height:360px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
+            @foreach (var log in Container.Logs)
+            {
+                <div style="color:@log.Color;">@log.Time @log.Message</div>
+            }
+            @if (Container.Logs.Count == 0)
+            {
+                <div class="hint-text">暂无日志，先「查询库存」再「执行」</div>
+            }
+        </div>
+    }
+    else
+    {
+        <div style="max-height:360px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
+            @foreach (var log in _batchLogs)
+            {
+                <div style="color:@log.Color;">@log.Time @log.Message</div>
+            }
+            @if (_batchLogs.Count == 0)
+            {
+                <div class="hint-text">暂无日志，点击「随机生成」生成移动任务</div>
+            }
+        </div>
+    }
     }
 </div>
 
@@ -406,29 +349,21 @@
     //    供按类型筛选候选池与手输站点校验使用）──
     private List<MapStationLite> _mapStations = [];
 
-    // ── 批量参数（GenerateBatch 生成预览列表 _generatedTasks，SendBatch 逐条下发）──
-    private string _batchSource = "manual";
-    private string _batchManualSites = "";
-    private int _batchTypeFilter;
-    private int _batchFloorFilter;
-    private int _batchCount = 5;
+    // ── 纯移动任务（循环自动下发：每 _batchInterval 秒在选点范围内随机抽站下发 MOVE_ONLY）──
     private int _batchPriority = 50;
-    private string _batchOrderIdPrefix = "Simulate_MoveOnly_";
+    private string _batchOrderIdPrefix = "SimMoveOnly";
     private int _batchInterval = 3;
-    private List<BatchTaskItem> _generatedTasks = [];
-    private bool _batchSending;
-    private int _batchSent;
-    private int _batchTotal;
+    private bool _moveRunning;                       // 循环下发运行中标志
+    private int _moveSeq;                            // OrderId 递增序号（循环下发的唯一性）
+    /// <summary>纯移动任务日志（自动下发明细，模式切到「纯移动任务」时展示）。</summary>
+    private readonly List<AutoLogEntry> _batchLogs = [];
 
     // ── 响应 ──
     private string _responseText = "";
     private string _respClass = "";
 
-    // 批量任务预览行：序号 / 站点编码 / 站点类型位掩码（仅预览用，下发时重新组装请求体）
-    private record BatchTaskItem(int No, string Mark, int StationType);
-
     // ── 卡片折叠状态（持久化到 localStorage 键 grcs_auto_collapsed）──
-    private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["range"] = true, ["batch"] = true, ["container"] = true, ["auto"] = true };
+    private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["range"] = true, ["auto"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
     {
@@ -437,8 +372,6 @@
     }
     private Task ToggleConn() => Toggle("conn");
     private Task ToggleRange() => Toggle("range");
-    private Task ToggleBatch() => Toggle("batch");
-    private Task ToggleContainer() => Toggle("container");
     private Task ToggleAutoSection() => Toggle("auto");
 
     // ── 选点范围（grcs_auto_range：AutomationTasks / AutoRunService / ContainerTaskService 共享）──
@@ -483,7 +416,7 @@
             var w = new List<string>();
             if (_rangeTransferPoints.Count == 0) w.Add("选点范围内没有接驳位，空托入库/带货出库无法下发");
             if (_rangeStorages.Count == 0) w.Add("选点范围内没有储位，无法确定目标货位");
-            if (Auto.FlowMode != 2 && _rangePickingStations.Count == 0) w.Add("选点范围内没有分拣台，分拣流程无法下发");
+            if (Auto.FlowMode != 2 && Auto.FlowMode != 3 && _rangePickingStations.Count == 0) w.Add("选点范围内没有分拣台，分拣流程无法下发");
             return w;
         }
     }
@@ -496,8 +429,78 @@
         _ = LocalStore.SetAsync(Js, "grcs_auto_range", JsonSerializer.Serialize(_range));
     }
 
+    /// <summary>清空手动指定站点输入框并持久化（等价于不限站点，仅保留类型/楼层过滤）。</summary>
+    private void ClearRangeMarks()
+    {
+        _rangeMarksText = "";
+        SaveRange();
+    }
+
+    /// <summary>
+    /// 打开「站点 XY 散点图 + 框选器」（StationMapPicker，纯 JS 实现）。
+    /// 数据口径：候选集 = 启用站点 + 当前类型过滤 + 楼层（不含 Marks 白名单自身，
+    /// 否则越选越窄）；禁用站点一并传入供置灰展示但不可选。
+    /// 确定 → JS 返回选中 Mark 数组 → 写回 _rangeMarksText 并复用 SaveRange 持久化；
+    /// 取消返回 null 不改动。再次打开时既有 Mark 自动预选中，可增量编辑。
+    /// </summary>
+    private async Task OpenStationMapPicker()
+    {
+        if (_mapStations.Count == 0)
+        {
+            ShowResp("❌ 请先在「地图信息」页加载地图数据", "error");
+            return;
+        }
+
+        // 候选站点：类型过滤命中的全部站点（含禁用，供 JS 置灰展示）；白名单不参与过滤
+        var stations = _mapStations
+            .Where(s => _range.TypeFilter == 0 || (s.StationType & _range.TypeFilter) != 0)
+            .Select(s => new StationMapPickerStation
+            {
+                Mark = s.Mark,
+                StationType = s.StationType,
+                X = s.X,
+                Y = s.Y,
+                Floor = s.Floor,
+                StaEnable = s.StaEnable,
+            })
+            .ToList();
+        var floors = stations.Where(s => s.StaEnable).Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
+        if (floors.Count == 0)
+        {
+            ShowResp("❌ 当前类型筛选下没有可用的启用站点", "error");
+            return;
+        }
+        // 范围楼层=全部时默认取最低层，否则取范围楼层（不在候选中时回退最低层）
+        int initialFloor = _range.FloorFilter != 0 && floors.Contains(_range.FloorFilter)
+            ? _range.FloorFilter
+            : floors[0];
+
+        var config = new StationMapPickerConfig
+        {
+            Floors = floors,
+            InitialFloor = initialFloor,
+            Stations = stations,
+            Preselected = _range.Marks,
+        };
+
+        try
+        {
+            var result = await Js.InvokeAsync<string?>("grcsStationMapPickerOpen", JsonSerializer.Serialize(config));
+            if (result == null) return; // 用户取消，不改动
+            var marks = JsonSerializer.Deserialize<List<string>>(result, JsonOpts) ?? [];
+            _rangeMarksText = string.Join(", ", marks);
+            SaveRange();
+        }
+        catch (Exception ex)
+        {
+            ShowResp($"❌ 地图框选失败：{ex.Message}", "error");
+        }
+    }
+
     // ── 自动化（运行状态/日志在 AutoRunService 单例中，跨导航存活；页面只订阅刷新。
     //    服务内部定时器自己管理生命周期，页面销毁时退订 Changed 事件即可）──
+    /// <summary>合并卡片模式：poll=轮询自动化，batch=批量任务。</summary>
+    private string _autoMode = "poll";
     private void OnAutoChanged() => InvokeAsync(StateHasChanged);
     private void OnContainerChanged() => InvokeAsync(StateHasChanged);
     /// <summary>退订两个后台服务的状态变化事件，避免组件销毁后回调泄漏。</summary>
@@ -507,10 +510,10 @@
 
     // ── 自动容器任务（用户输入参数；执行状态托管到 ContainerTaskService）──
     private int _containerFlow = 1;
-    private int _containerCount = 3;
+    private int _containerCount = 1;
     private int _containerInterval = 3;
 
-    /// <summary>查询 GRCS 库存并缓存到 ContainerTaskService（空托/带货托/货物/配对货计数）。</summary>
+    /// <summary>查询 GRCS 库存并缓存到 ContainerTaskService（空托/带货托/货物/任务可用货物计数）。</summary>
     private async Task RefreshContainerInventory()
     {
         await Container.RefreshInventoryAsync();
@@ -578,117 +581,77 @@
         catch { }
     }
 
-    // 手输站点文本解析：支持中英文逗号/分号/空白/换行分隔，去重保留顺序
-    private List<string> _manualSites => _batchManualSites
-        .Split([',', '，', ';', '；', ' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-        .Distinct().ToList();
-
     /// <summary>
-    /// 批量下发候选池：按来源模式计算
-    /// - 手输：文本解析出的站点，若已加载地图数据则用地图站点（大小写不敏感匹配）
-    /// - 按类型：启用站点中 StationType 位掩码包含全部所选类型位者
-    /// 最后统一按楼层过滤（0=全部楼层）
+    /// 纯移动任务候选池：启用站点 + 选点范围约束（类型/楼层/Mark 白名单，与轮询/批量同口径）。
+    /// 范围未开启 = 全图启用站点。不再单独选类型/楼层（由选点范围卡片统一管控）。
     /// </summary>
-    private List<MapStationLite> _batchPool
+    private List<MapStationLite> _batchPool => _range.ApplyTo(_mapStations.Where(s => s.StaEnable));
+
+    private void ClearBatch()
     {
-        get
-        {
-            IEnumerable<MapStationLite> stations;
-            if (_batchSource == "type")
-            {
-                stations = _batchTypeFilter == 0
-                    ? _mapStations.Where(s => s.StaEnable)
-                    : _mapStations.Where(s => s.StaEnable && (s.StationType & _batchTypeFilter) == _batchTypeFilter);
-            }
-            else if (_mapStations.Count == 0)
-            {
-                stations = _manualSites.Select(m => new MapStationLite { Mark = m });
-            }
-            else
-            {
-                stations = _manualSites
-                    .Select(m => _mapStations.FirstOrDefault(s => s.Mark.Equals(m, StringComparison.OrdinalIgnoreCase)))
-                    .Where(s => s != null).Select(s => s!);
-            }
-            if (_batchFloorFilter != 0)
-                stations = stations.Where(s => s.Floor == _batchFloorFilter);
-            return stations.ToList();
-        }
-    }
-
-    // 切换站点来源/类型位：切换后清空已生成的预览，强制重新生成
-    private void SetBatchSourceManual() { _batchSource = "manual"; _batchFloorFilter = 0; _generatedTasks.Clear(); }
-    private void SetBatchSourceType() { _batchSource = "type"; _batchFloorFilter = 0; _batchTypeFilter = 0; _generatedTasks.Clear(); }
-    private void ToggleBatchType(int bit) { _batchTypeFilter ^= bit; _generatedTasks.Clear(); }
-    // 可选楼层列表：启用且符合当前类型筛选的站点所在楼层去重排序
-    private List<int> _availableFloors => _mapStations
-        .Where(s => s.StaEnable && (_batchTypeFilter == 0 || (s.StationType & _batchTypeFilter) == _batchTypeFilter))
-        .Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
-    private void ClearBatch() => _generatedTasks.Clear();
-
-    /// <summary>从候选池随机抽取 _batchCount 个站点生成任务预览（尚未下发，可反复重新生成）。</summary>
-    private void GenerateBatch()
-    {
-        var pool = _batchPool;
-        if (pool.Count == 0) { ShowResp("❌ 候选站点池为空", "error"); return; }
-        int n = Math.Clamp(_batchCount, 1, 500);
-        var rand = Random.Shared;
-        _generatedTasks = Enumerable.Range(1, n)
-            .Select(i => { var st = pool[rand.Next(pool.Count)]; return new BatchTaskItem(i, st.Mark, st.StationType); })
-            .ToList();
-    }
-
-    /// <summary>
-    /// 批量下发流程：同一批次共用 batchId 后缀拼接 OrderId（便于整批识别），
-    /// 逐条 POST GRCS /api/RawOrder/ChangeFloor（经 WcsService.SendVehicleOrderAsync），
-    /// 每条之间按 _batchInterval 秒节流，进度经 _batchSent/_batchTotal 回显，
-    /// 失败只记录前 5 条明细。
-    /// </summary>
-    private async Task SendBatch()
-    {
-        if (_generatedTasks.Count == 0) { ShowResp("❌ 请先随机生成任务", "error"); return; }
-        if (string.IsNullOrEmpty(_sceneName)) { ShowResp("❌ 请填写场景名称", "error"); return; }
-
-        _batchSending = true;
-        _batchTotal = _generatedTasks.Count;
-        _batchSent = 0;
+        _batchLogs.Clear();
         StateHasChanged();
+    }
 
-        int okCount = 0;
-        var errors = new List<string>();
-        // 批次 ID：同一批任务的 OrderId 共用此后缀，历史里可按前缀整批识别
-        var batchId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+    /// <summary>
+    /// 纯移动任务循环下发开关：开始后每 _batchInterval 秒在「选点范围」候选池内
+    /// 随机抽 1 个站点下发 MOVE_ONLY 任务（ChangeFloor，自动分配车辆），直到手动停止。
+    /// </summary>
+    private async Task ToggleMoveDispatch()
+    {
+        if (_moveRunning) { _moveRunning = false; _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "⏹ 正在停止自动下发...", Color = "#fbbf24" }); StateHasChanged(); return; }
+        if (string.IsNullOrEmpty(_sceneName)) { _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 请填写场景名称（连接设置）", Color = "#f87171" }); StateHasChanged(); return; }
+        var pool = _batchPool;
+        if (pool.Count == 0) { _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 候选站点池为空（请检查「选点范围」），无法开始", Color = "#f87171" }); StateHasChanged(); return; }
 
-        foreach (var t in _generatedTasks)
+        _moveRunning = true;
+        _moveSeq = 0;
+        _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = $"▶ 开始自动下发：每 {_batchInterval} 秒随机下发 1 个纯移动任务（候选池 {pool.Count} 个，选点范围{(_range.Enabled ? "已开启" : "未开启=全图")}）", Color = "#60a5fa" });
+        StateHasChanged();
+        _ = MoveDispatchLoopAsync();
+    }
+
+    private async Task MoveDispatchLoopAsync()
+    {
+        while (_moveRunning)
         {
+            var pool = _batchPool;
+            if (pool.Count == 0)
+            {
+                _moveRunning = false;
+                _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 候选站点池为空（请检查「选点范围」），自动下发已停止", Color = "#f87171" });
+                StateHasChanged();
+                return;
+            }
+
+            var st = pool[Random.Shared.Next(pool.Count)];
             var payload = new VehicleOrderRequest
             {
                 CreateTime = DateTime.Now,
                 SceneName = _sceneName,
                 OrderType = "MOVE_ONLY",
-                OrderId = $"{_batchOrderIdPrefix}{batchId}_{t.No}",
+                OrderId = $"{_batchOrderIdPrefix}_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper()}_{++_moveSeq}",
                 OrderName = "wcs模拟器纯移动任务",
                 VehicleName = null,
                 Priority = _batchPriority,
-                StationCodes = [t.Mark],
+                StationCodes = [st.Mark],
             };
 
             var (ok, code, json) = await WcsService.SendVehicleOrderAsync(_baseUrl, payload);
-            if (ok) okCount++;
-            else if (errors.Count < 5) errors.Add($"#{t.No} {t.Mark}: HTTP {code}");
-
-            _batchSent++;
+            _batchLogs.Add(new AutoLogEntry
+            {
+                Time = DateTime.Now.ToString("HH:mm:ss"),
+                Message = (ok ? "✓ " : "❌ ") + $"#{_moveSeq:000}  {st.Mark}  [{TypeLabel(st.StationType)}]  " + (ok ? "下发成功" : $"下发失败 HTTP {code}"),
+                Color = ok ? "#4ade80" : "#f87171"
+            });
             StateHasChanged();
 
-            if (_batchInterval > 0 && _batchSent < _batchTotal)
-                await Task.Delay(_batchInterval * 1000);
+            if (!_moveRunning) break;
+            await Task.Delay(_batchInterval * 1000);
         }
-
-        ShowResp(
-            (okCount == _batchTotal ? "✅" : "⚠️") + $" 批量下发完成：成功 {okCount}/{_batchTotal}"
-            + (errors.Count > 0 ? "\n\n失败明细（前5条）：\n" + string.Join("\n", errors) : ""),
-            okCount == _batchTotal ? "success" : "error");
-        _batchSending = false;
+        _moveRunning = false;
+        _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "⏹ 自动下发已停止", Color = "#fbbf24" });
+        StateHasChanged();
     }
 
     /// <summary>站点类型位掩码 → 中文类型名（多类型用 + 连接；0=手输站点无类型）。</summary>
