@@ -20,6 +20,8 @@ builder.Services.AddScoped(sp => new HttpClient
 
 // Module navigation state (scoped = per-browser-tab)
 builder.Services.AddScoped<ModuleNavigationService>();
+// 后端存活状态共享服务（BackendStatus 渲染 + 各页面连接判定，单一数据源）
+builder.Services.AddScoped<BackendHealthService>();
 
 // WCS Simulator module services
 // ── DI 生命周期约定（重要）──

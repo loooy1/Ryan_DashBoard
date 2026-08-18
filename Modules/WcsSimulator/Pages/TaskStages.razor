@@ -1,39 +1,39 @@
 @page "/wcs-simulator/task-stages"
+@page "/wcs-simulator/history"
 @inject IWcsService WcsService
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
 @inject TaskLedgerService Ledger
 @inject TaskStageHub StageHub
+@inject AutomationHub AutoHub
+@inject BackendHealthService Health
 @implements IDisposable
 
 <PageTitle>任务看板</PageTitle>
 
 @* ════════════════════════════════════════════════
-   提示：WCS 后端地址在「地图信息」页系统设置配置
-   ════════════════════════════════════════════════ *@
-<div class="hint-text" style="margin:0 0 12px;">
-    WCS 后端地址在「地图信息」页系统设置配置，本页自动读取。
-</div>
-
-@* ════════════════════════════════════════════════
-   任务阶段列表：按任务分组展示阶段时间线
+   任务看板（下发历史 + 任务阶段合并页）：
+   - 台账为底：全量下发记录（类型筛选 + 关键词 + 分页加载）
+   - 点击行自动展开 → 内嵌该任务阶段时间线（START / LOAD_FINISH / FINISHED）
+   - 旧路由 /wcs-simulator/history（下发历史）重定向到本页
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
-        📊 任务阶段
+        📊 任务看板
         <span class="header-right-group" style="margin-left:auto;display:flex;gap:8px;align-items:center;">
-        @if (_clearConfirming)
-        {
-            <button class="btn btn-danger btn-sm" @onclick="ClearAll" @onclick:stopPropagation>确认清空</button>
-            <button class="btn btn-outline btn-sm" @onclick='() => _clearConfirming = false' @onclick:stopPropagation>取消</button>
-        }
-        else
-        {
-            <button class="btn btn-danger btn-sm" @onclick='() => _clearConfirming = true' @onclick:stopPropagation
-                    disabled="@(_groups.Count == 0)">🗑 清空全部</button>
-        }
-        <button class="btn btn-outline btn-sm" @onclick="RefreshNow" @onclick:stopPropagation
-                disabled="@_busy">🔄 刷新</button>
+            <button class="btn btn-outline btn-sm" @onclick="ClearHistory" @onclick:stopPropagation>🗑 清空历史</button>
+            @if (_clearConfirming)
+            {
+                <button class="btn btn-danger btn-sm" @onclick="ClearAll" @onclick:stopPropagation>确认清空阶段</button>
+                <button class="btn btn-outline btn-sm" @onclick='() => _clearConfirming = false' @onclick:stopPropagation>取消</button>
+            }
+            else
+            {
+                <button class="btn btn-danger btn-sm" @onclick='() => _clearConfirming = true' @onclick:stopPropagation
+                        disabled="@(_groups.Count == 0)">🗑 清空阶段</button>
+            }
+            <button class="btn btn-outline btn-sm" @onclick="RefreshNow" @onclick:stopPropagation
+                    disabled="@_busy">🔄 刷新</button>
         </span>
         <span class="collapse-arrow">@(IsCollapsed("ts_list") ? "▸ 展开" : "▾ 收起")</span>
     </div>
@@ -45,78 +45,165 @@
             ⚠ 无法连接 WCS 后端，请确认 GrcsBackend 已启动。@_lastError
         </div>
     }
-    @if (_groups.Count == 0)
+    @* 类型筛选 + 关键字搜索 *@
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;">
+        @foreach (var f in _filters)
+        {
+            <button class="chip-btn @(_activeFilter == f.Key ? "on" : "")" @onclick="() => SetFilter(f.Key)">@f.Value</button>
+        }
+        <input type="text" value="@_keyword" @oninput="OnKeywordChanged"
+               placeholder="搜索 任务ID / 托盘号 / 货物号 / 站点..." style="flex:1;min-width:200px;">
+    </div>
+
+    @if (_visible.Count == 0)
     {
-        <div class="hint-text" style="margin:8px 0;">暂无任务阶段。GRCS 下发任务后，会通过 task_stage_change 上报 START / LOAD_FINISH / FINISHED 阶段。</div>
+        <div class="hint-text" style="margin:8px 0;">暂无下发记录。任务下发后会进入台账，GRCS 执行时通过 task_stage_change 上报 START / LOAD_FINISH / FINISHED。</div>
     }
     else
     {
-        @foreach (var g in _groups)
+        <div style="overflow-x:auto;">
+        <table class="entry-table">
+            <thead><tr><th></th><th>状态</th><th>下发时间</th><th>任务ID</th><th>类型</th><th>托盘号</th><th>货物号</th><th>站点</th><th>仓库</th><th>HTTP</th><th>操作</th></tr></thead>
+            <tbody>
+            @foreach (var e in _visible)
+            {
+                var expanded = IsExpanded(e.TaskId);
+                var status = TaskStatus(e);
+                <tr class="row-clickable" @onclick="() => ToggleExpand(e.TaskId)" title="点击展开/收起任务阶段">
+                    <td style="color:#64748b;white-space:nowrap;">@(expanded ? "▾" : "▸")</td>
+                    <td><span class="badge @(StatusBadgeClass(status))">@status</span></td>
+                    <td style="font-size:0.72rem;color:#94a3b8;white-space:nowrap;">@e.Time</td>
+                    <td style="font-family:Consolas,monospace;font-size:0.75rem;">@e.TaskId</td>
+                    <td><span class="badge">@TypeLabel(e.TaskType)</span></td>
+                    <td>@e.ContainerCode</td>
+                    <td>@e.CargoCode</td>
+                    <td>@string.Join(" → ", e.StationCode)</td>
+                    <td>@e.Warehouse</td>
+                    <td>@e.StatusCode</td>
+                    <td><button class="btn btn-danger btn-xs" @onclick="() => DeleteTask(e.TaskId)" @onclick:stopPropagation
+                                title="删除该任务的全部阶段事件" disabled="@_busy">✕</button></td>
+                </tr>
+                @if (expanded)
+                {
+                    <tr class="stage-expand">
+                        <td colspan="11">
+                            @if (_groups.TryGetValue(e.TaskId, out var evts) && evts.Count > 0)
+                            {
+                                <div class="stage-timeline">
+                                    @foreach (var se in evts)
+                                    {
+                                        <div class="stage-row">
+                                            <span class="stage-dot @(StageDotClass(se.Stage))"></span>
+                                            <span class="stage-time">@se.Time.ToString("HH:mm:ss")</span>
+                                            <span class="badge @(StageBadgeClass(se.Stage))">@StageLabel(se.Stage)</span>
+                                            @if (!string.IsNullOrEmpty(se.ContainerCode))
+                                            {
+                                                <span class="stage-meta">容器 <code>@se.ContainerCode</code></span>
+                                            }
+                                            @if (!string.IsNullOrEmpty(se.StationCode))
+                                            {
+                                                <span class="stage-meta">站点 <code>@se.StationCode</code></span>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="hint-text" style="margin:4px 0;">暂无阶段上报（任务可能尚未开始执行，或阶段事件已清空）。</div>
+                            }
+                            @* 分拣任务：关联显示回库任务（TaskId+"_R"，container_operation_finish 下发）*@
+                            @if (e.TaskType == "SORTING")
+                            {
+                                var returnTaskId = ReturnTaskIdOf(e.TaskId);
+                                var returnLedger = _ledgerMap.GetValueOrDefault(returnTaskId);
+                                <div style="margin-top:10px;padding-top:10px;border-top:1px dashed #334155;">
+                                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+                                        <span style="color:#64748b;font-size:0.75rem;">↳ 回库任务</span>
+                                        <code style="color:#94a3b8;background:#1e293b;padding:1px 6px;border-radius:4px;font-size:0.72rem;">@returnTaskId</code>
+                                        @if (returnLedger != null)
+                                        {
+                                            var rstatus = TaskStatus(returnLedger);
+                                            <span class="badge @(StatusBadgeClass(rstatus))">@rstatus</span>
+                                            <span class="stage-meta">下发 @returnLedger.Time</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="badge badge-empty">未下发</span>
+                                        }
+                                    </div>
+                                    @if (_groups.TryGetValue(returnTaskId, out var revts) && revts.Count > 0)
+                                    {
+                                        <div class="stage-timeline">
+                                            @foreach (var se in revts)
+                                            {
+                                                <div class="stage-row">
+                                                    <span class="stage-dot @(StageDotClass(se.Stage))"></span>
+                                                    <span class="stage-time">@se.Time.ToString("HH:mm:ss")</span>
+                                                    <span class="badge @(StageBadgeClass(se.Stage))">@StageLabel(se.Stage)</span>
+                                                    @if (!string.IsNullOrEmpty(se.ContainerCode))
+                                                    {
+                                                        <span class="stage-meta">容器 <code>@se.ContainerCode</code></span>
+                                                    }
+                                                    @if (!string.IsNullOrEmpty(se.StationCode))
+                                                    {
+                                                        <span class="stage-meta">站点 <code>@se.StationCode</code></span>
+                                                    }
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                    else if (returnLedger != null)
+                                    {
+                                        <div class="hint-text" style="margin:4px 0;">回库任务已下发，尚未有阶段上报。</div>
+                                    }
+                                </div>
+                            }
+                        </td>
+                    </tr>
+                }
+            }
+            </tbody>
+        </table>
+        </div>
+        @if (_filtered.Count > _visible.Count)
         {
-            var latest = g.Value[^1];
-            <div class="stage-card">
-                <div class="stage-card-header" style="gap:0;">
-                    <span class="stage-task-id" style="flex:1;text-align:left;">📦 @latest.TaskId</span>
-                    <span style="flex:1;display:flex;align-items:center;gap:8px;text-align:left;">
-                        @if (!string.IsNullOrEmpty(latest.TaskType))
-                        {
-                            var label = TaskTypeLabel(latest.TaskType);
-                            <span style="color:#94a3b8;font-size:0.75rem;">@latest.TaskType</span>
-                            @if (label != latest.TaskType)
-                            {
-                                <span class="badge badge-selected">@label</span>
-                            }
-                        }
-                        else
-                        {
-                            <span class="badge badge-empty" style="font-size:0.7rem;color:#cbd5e1;">非本模拟器下发的任务，未知任务类型</span>
-                        }
-                        <span class="stage-time">@latest.Time.ToString("yyyy-MM-dd HH:mm:ss")</span>
-                        <button class="btn btn-danger btn-xs" @onclick="() => DeleteTask(latest.TaskId)"
-                                style="margin-left:auto;" disabled="@_busy">✕</button>
-                    </span>
-                </div>
-                <div class="stage-timeline">
-                    @foreach (var e in g.Value)
-                    {
-                        <div class="stage-row">
-                            <span class="stage-dot @(StageDotClass(e.Stage))"></span>
-                            <span class="stage-time">@e.Time.ToString("HH:mm:ss")</span>
-                            <span class="badge @(StageBadgeClass(e.Stage))">@StageLabel(e.Stage)</span>
-                            @if (!string.IsNullOrEmpty(e.ContainerCode))
-                            {
-                                <span class="stage-meta">容器 <code>@e.ContainerCode</code></span>
-                            }
-                            @if (!string.IsNullOrEmpty(e.StationCode))
-                            {
-                                <span class="stage-meta">站点 <code>@e.StationCode</code></span>
-                            }
-                        </div>
-                    }
-                </div>
-            </div>
+            <button class="btn btn-outline btn-sm" @onclick="LoadMore" style="margin-top:8px;">加载更多（@_visible.Count / @_filtered.Count）</button>
         }
     }
     }
 </div>
 
 @code {
-    private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new()
+    // ── 台账展示 ──
+    private List<TaskLedgerEntry> _ledger = [];     // 台账原始数据（TaskLedgerService 内存缓存读取）
+    private Dictionary<string, TaskLedgerEntry> _ledgerMap = new(StringComparer.OrdinalIgnoreCase); // TaskId → 条目（回库任务关联查找用）
+    private List<TaskLedgerEntry> _filtered = [];   // 经筛选 + 关键词过滤后的结果
+    private List<TaskLedgerEntry> _visible = [];    // 当前已加载的可视窗口（分页加载，每页 PageSize 条）
+    private string _activeFilter = "all";           // 当前类型筛选键（见 _filters）
+    private string _keyword = "";                   // 关键词（任务ID/托盘/货物/站点）
+    private const int PageSize = 100;               // 每页条数，防大量记录一次渲染卡顿
+    private readonly HashSet<string> _expanded = new(StringComparer.OrdinalIgnoreCase); // 展开显示阶段的任务
+
+    // 类型筛选注册表：键 → 中文标签；ApplyFilter 里按键映射到具体任务类型码
+    private static readonly Dictionary<string, string> _filters = new()
     {
-        PropertyNameCaseInsensitive = true
+        ["all"] = "全部",
+        ["in"] = "入库",
+        ["out"] = "出库",
+        ["sort"] = "分拣",
+        ["move"] = "移库"
     };
 
-    // ── 表单字段 ──
-    private int _pollSeconds = 3;                          // 轮询间隔
-    private int _maxTasks = 10;                            // 显示任务数
-    private bool _busy;                                    // 操作中标志
-    private bool _pollingOk = true;                        // 轮询是否成功
+    // ── 任务阶段 ──
+    private bool _busy;                             // 操作中标志
+    private bool _pollingOk = true;                 // 轮询是否成功
     private string _lastError = "";
     private Dictionary<string, List<StageChangeEvent>> _groups = [];   // TaskId → 阶段事件（时间正序）
-    private HashSet<string> _deletedTaskIds = [];                      // 已删除的 TaskId（持久化）
     private Dictionary<string, string> _taskTypeMap = [];              // TaskId → TaskType（从下发历史还原）
     private bool _clearConfirming;                                     // 清空全部确认态
-    private System.Threading.Timer? _timer;                // 轮询定时器
+    private System.Threading.Timer? _timer;         // 轮询定时器
+    private bool _refreshing;                       // 重入保护
 
     // ── 卡片折叠状态（持久化，默认全部折叠避免初始化闪烁）──
     private Dictionary<string, bool> _collapsed = new() { ["ts_list"] = true };
@@ -126,8 +213,12 @@
         var wasCollapsed = IsCollapsed(key);
         _collapsed[key] = !wasCollapsed;
         await LocalStore.SetAsync(Js, "grcs_ts_collapsed", System.Text.Json.JsonSerializer.Serialize(_collapsed));
-        // 展开时立即加载数据
-        if (wasCollapsed && key == "ts_list") await LoadEvents();
+        if (wasCollapsed && key == "ts_list")
+        {
+            await LoadEvents();
+            await LoadLedger();
+            StateHasChanged();
+        }
     }
     private Task ToggleList() => Toggle("ts_list");
 
@@ -138,27 +229,39 @@
         {
             string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
             if (V("grcs_ts_collapsed") is string cjson) _collapsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
-            if (V("grcs_ts_deleted") is string delJson) _deletedTaskIds = System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(delJson) ?? [];
-            if (V("grcs_ts_events") is string cachedJson) { var cachedEvents = System.Text.Json.JsonSerializer.Deserialize<List<StageChangeEvent>>(cachedJson, _jsonOpts) ?? []; if (cachedEvents.Count > 0) BuildGroups(cachedEvents); }
         }
         catch { }
 
         // 恢复下发历史（台账内存缓存，无 JS 边界）
-        try
-        {
-            await RebuildTaskTypeMap();
-        }
-        catch { }
+        try { await RebuildTaskTypeMap(); } catch { }
 
-        // 懒加载：只有展开的任务阶段列表才发 HTTP，折叠的等用户展开时再拉
-        if (!IsCollapsed("ts_list")) await LoadEvents();
+        // 懒加载：只有展开才发 HTTP/读台账，折叠的等用户展开时再拉
+        if (!IsCollapsed("ts_list"))
+        {
+            await LoadEvents();
+            await LoadLedger();
+        }
 
         // 定时轮询：GRCS 每几秒可能上报新阶段，折叠时跳过节省后端压力
         _timer = new System.Threading.Timer(async _ =>
         {
-            if (!IsCollapsed("ts_list")) await LoadEvents();
+            if (IsCollapsed("ts_list")) return;
+            await RefreshAll();
             await InvokeAsync(StateHasChanged);
-        }, null, TimeSpan.FromSeconds(_pollSeconds), TimeSpan.FromSeconds(_pollSeconds));
+        }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+    }
+
+    /// <summary>合并刷新：阶段事件 + 台账（台账走 2s 内存缓存，开销极小）。</summary>
+    private async Task RefreshAll()
+    {
+        if (_refreshing) return;
+        _refreshing = true;
+        try
+        {
+            await LoadEvents();
+            await LoadLedger();
+        }
+        finally { _refreshing = false; }
     }
 
     public void Dispose()
@@ -183,78 +286,160 @@
     }
 
     /// <summary>
-    /// 从共享轮询器缓存读阶段事件并按 TaskId 分组。
-    /// 优化前本方法自己发 HTTP（每 _pollSeconds 秒全量拉一次并反序列化），
-    /// 现在零 HTTP：拉取/增量合并由 TaskStageHub 统一负责，本方法只做
-    /// 展示层工作——补任务类型、按分组上限裁剪、持久化到浏览器缓存。
-    /// 页面顶部的 _timer 保留：它不再发请求，只负责按节拍把 hub 缓存的最新
-    /// 数据刷进 UI（折叠时跳过，不浪费渲染）。
+    /// 从共享轮询器缓存读阶段事件并按 TaskId 分组（零 HTTP，TaskStageHub SignalR 常驻推送）。
     /// </summary>
     private async Task LoadEvents()
     {
         await RebuildTaskTypeMap();
         await StageHub.EnsureStartedAsync();
-        if (!StageHub.IsOnline) { _pollingOk = false; _lastError = "无法连接 WCS 后端"; return; }
+        if (Health.WcsOnline == false) { _pollingOk = false; _lastError = "无法连接 WCS 后端"; return; }
         _pollingOk = true;
         var events = StageHub.Events.ToList();
         try
         {
-            // 从下发历史匹配任务类型
             foreach (var e in events)
             {
                 if (string.IsNullOrEmpty(e.TaskType) && _taskTypeMap.TryGetValue(e.TaskId, out var tt))
                     e.TaskType = tt;
             }
-            // 持久化到浏览器（仅当后端有数据时才更新，防止重启后清空缓存）
-            if (events.Count > 0)
-            {
-                await LocalStore.SetAsync(Js, "grcs_ts_events", System.Text.Json.JsonSerializer.Serialize(events));
-                BuildGroups(events);
-            }
+            BuildGroups(events);
         }
         catch { }
     }
 
-    /// <summary>将事件列表按 TaskId 分组并过滤已删除任务。</summary>
+    /// <summary>将事件列表按 TaskId 分组（保留全量分组，供任意台账行展开时间线）。</summary>
     private void BuildGroups(List<StageChangeEvent> events)
     {
         _groups = events
-            .Where(e => !_deletedTaskIds.Contains(e.TaskId))
             .GroupBy(e => e.TaskId)
             .ToDictionary(g => g.Key, g => g.ToList())
-            .OrderByDescending(g => g.Value[^1].Time)   // 最新任务在最上面
-            .Take(_maxTasks)
+            .OrderByDescending(g => g.Value[^1].Time)
             .ToDictionary(g => g.Key, g => g.Value);
+    }
+
+    /// <summary>重新读台账并应用筛选（台账 2s 缓存，刷新成本低）。</summary>
+    private async Task LoadLedger()
+    {
+        try
+        {
+            _ledger = await Ledger.GetAsync();
+            _ledgerMap = _ledger.Where(x => !string.IsNullOrEmpty(x.TaskId))
+                .ToDictionary(x => x.TaskId, StringComparer.OrdinalIgnoreCase);
+        }
+        catch { }
+        ApplyFilter();
     }
 
     /// <summary>手动触发一次刷新。</summary>
     private async Task RefreshNow()
     {
         _busy = true;
-        await LoadEvents();
+        await RefreshAll();
         _busy = false;
+    }
+
+    // ── 台账行交互 ──
+    private bool IsExpanded(string taskId) => _expanded.Contains(taskId);
+    private void ToggleExpand(string taskId)
+    {
+        if (!_expanded.Remove(taskId)) _expanded.Add(taskId);
+        StateHasChanged();
+    }
+
+    /// <summary>分拣任务 → 回库任务号：优先取已发送参数（workflow_state sent 行），未发送回退 TaskId+"_R"。</summary>
+    private string ReturnTaskIdOf(string taskId)
+    {
+        if (AutoHub.ConfirmState.TryGetValue("sent", out var rows))
+        {
+            var row = rows.FirstOrDefault(r => r.TaskId == taskId);
+            if (row?.Value is string v)
+            {
+                try
+                {
+                    var p = System.Text.Json.JsonSerializer.Deserialize<SortingSendParams>(v, _jsonOpts);
+                    if (!string.IsNullOrWhiteSpace(p?.ReturnTaskId)) return p.ReturnTaskId;
+                }
+                catch { }
+            }
+        }
+        return taskId + "_R";
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new() { PropertyNameCaseInsensitive = true };
+
+    /// <summary>任务状态：由台账 Ok + 阶段事件推导（已下发 / 执行中 / 已完成 / 失败）。</summary>
+    private string TaskStatus(TaskLedgerEntry e)
+    {
+        if (!e.Ok) return "失败";
+        if (_groups.TryGetValue(e.TaskId, out var evts))
+        {
+            if (evts.Any(x => x.Stage == "FINISHED")) return "已完成";
+            if (evts.Count > 0) return "执行中";
+        }
+        return "已下发";
+    }
+
+    private static string StatusBadgeClass(string status) => status switch
+    {
+        "已完成" => "badge-ok",
+        "执行中" => "badge-selected",
+        "失败" => "badge-danger",
+        _ => "badge-info"
+    };
+
+    /// <summary>切换类型筛选芯片。</summary>
+    private void SetFilter(string f) { _activeFilter = f; ApplyFilter(); }
+
+    /// <summary>关键词输入实时过滤。</summary>
+    private void OnKeywordChanged(ChangeEventArgs e) { _keyword = e.Value?.ToString() ?? ""; ApplyFilter(); }
+
+    /// <summary>按类型 + 关键词过滤台账（回库任务不单独成行，挂在分拣任务展开区），过滤后只取前 PageSize 条进入可视窗口。</summary>
+    private void ApplyFilter()
+    {
+        IEnumerable<TaskLedgerEntry> q = _ledger.Where(e => e.TaskType != "SORTING_RETURN");
+        switch (_activeFilter)
+        {
+            case "in": q = q.Where(e => e.TaskType is "CONTAINER_CARRY_INBOUND" or "CARGO_CARRY_INBOUND"); break;
+            case "out": q = q.Where(e => e.TaskType is "CONTAINER_CARRY_OUTBOUND" or "CARGO_CARRY_OUTBOUND"); break;
+            case "sort": q = q.Where(e => e.TaskType == "SORTING"); break;
+            case "move": q = q.Where(e => e.TaskType == "STOCK_TRANSFER"); break;
+        }
+        if (!string.IsNullOrWhiteSpace(_keyword))
+        {
+            var k = _keyword.Trim();
+            q = q.Where(e => e.TaskId.Contains(k, StringComparison.OrdinalIgnoreCase)
+                || e.ContainerCode.Contains(k, StringComparison.OrdinalIgnoreCase)
+                || e.CargoCode.Contains(k, StringComparison.OrdinalIgnoreCase)
+                || e.StationCode.Any(s => s.Contains(k, StringComparison.OrdinalIgnoreCase)));
+        }
+        _filtered = q.ToList();
+        _visible = _filtered.Take(PageSize).ToList();
+    }
+
+    /// <summary>分页加载：可视窗口再扩一页（防止大数据量一次渲染卡顿）。</summary>
+    private void LoadMore() => _visible = _filtered.Take(_visible.Count + PageSize).ToList();
+
+    /// <summary>任务类型码 → 显示文本：附加中文标签，未知码原样显示。</summary>
+    private static string TypeLabel(string code)
+    {
+        var t = TaskTypeRegistry.All.FirstOrDefault(x => x.Value == code);
+        return t != null ? $"{code}（{t.Label}）" : code;
     }
 
     /// <summary>删除指定任务的所有阶段事件（后端 + 浏览器缓存）。</summary>
     private async Task DeleteTask(string taskId)
     {
         _busy = true;
-        // 1. 调用后端删除接口
-            var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
+        var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
         if (!ok && code != 404)
         {
             _lastError = $"删除失败 HTTP {code}";
             _busy = false;
             return;
         }
-        // 2. 同步共享轮询器缓存，避免其他页面的等待者基于已删除事件误判
-        StageHub.RemoveTask(taskId);
-        // 3. 记录到已删除集合（持久化）
-        _deletedTaskIds.Add(taskId);
-        await LocalStore.SetAsync(Js, "grcs_ts_deleted",
-            System.Text.Json.JsonSerializer.Serialize(_deletedTaskIds));
-        // 4. 从当前分组中移除
+        StageHub.RemoveTask(taskId);   // 同步共享轮询器缓存，避免其他页面的等待者基于已删除事件误判
         _groups.Remove(taskId);
+        _expanded.Remove(taskId);
         _busy = false;
     }
 
@@ -265,7 +450,7 @@
         var taskIds = _groups.Keys.ToList();
         foreach (var taskId in taskIds)
         {
-        var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
+            var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
             if (!ok && code != 404)
             {
                 _lastError = $"删除 {taskId} 失败 HTTP {code}";
@@ -273,14 +458,19 @@
                 _clearConfirming = false;
                 return;
             }
-            _deletedTaskIds.Add(taskId);
         }
-        await LocalStore.SetAsync(Js, "grcs_ts_deleted",
-            System.Text.Json.JsonSerializer.Serialize(_deletedTaskIds));
         _groups.Clear();
         StageHub.ClearAll();   // 后端已清空，同步共享轮询器缓存
         _clearConfirming = false;
         _busy = false;
+    }
+
+    /// <summary>清空全部下发历史（台账 + 后端 SQLite）。</summary>
+    private async Task ClearHistory()
+    {
+        await Ledger.ClearAsync();
+        _ledger.Clear(); _filtered.Clear(); _visible.Clear(); _expanded.Clear();
+        StateHasChanged();
     }
 
     /// <summary>将任务类型代码映射为中文含义。</summary>

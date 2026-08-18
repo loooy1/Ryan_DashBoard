@@ -59,8 +59,8 @@ public class WcsContainerReadyRequest
 /// 货物到达卡片：由历史任务中的 CARGO_CARRY_INBOUND 任务自动生成，
 /// 等待手动确认或自动模式全确认后 POST container_ready 通知 RCS。
 /// 数据流：信号交互页从任务台账筛选入库任务（自动模式取段1、手动模式取段2，
-/// 且要求段1 已完成/段2 已下发）生成卡片；确认集合持久化在
-/// localStorage grcs_arrival_confirmed，页面刷新后不丢失。
+/// 且要求段1 已完成/段2 已下发）生成卡片；确认集合持久化在后端 SQLite
+/// workflow_state 表（kind=arrival），由前端 AutomationHub 每秒轮询同步，跨标签页一致。
 /// </summary>
 public class ArrivalCard
 {
@@ -78,6 +78,12 @@ public class ArrivalCard
 
     /// <summary>任务下发时间（历史记录保存的时间文本）。</summary>
     public string Time { get; set; } = "";
+
+    /// <summary>申请时间：GRCS 任务完成（FINISHED 事件）时刻，卡片由此生成。</summary>
+    public DateTime? AppliedAt { get; set; }
+
+    /// <summary>信号下发时间：container_ready 确认发送时刻（workflow_state 落库时间，未确认为 null）。</summary>
+    public DateTime? SendAt { get; set; }
 
     /// <summary>是否已确认（已 POST container_ready）。</summary>
     public bool Confirmed { get; set; }
@@ -108,8 +114,8 @@ public class WcsContainerRemoveRequest
 /// 货物移除卡片：由历史任务中的 CONTAINER_CARRY_OUTBOUND 任务自动生成，
 /// 等待手动确认或自动模式全确认后 POST container_remove 通知 RCS。
 /// 数据流：信号交互页从任务台账筛选出库任务（自动模式取出库段1 CARGO_CARRY_OUTBOUND、
-/// 手动模式取出库段2 CONTAINER_CARRY_OUTBOUND）生成卡片；确认集合持久化在
-/// localStorage grcs_removal_confirmed，页面刷新后不丢失。
+/// 手动模式取出库段2 CONTAINER_CARRY_OUTBOUND）生成卡片；确认集合持久化在后端 SQLite
+/// workflow_state 表（kind=removal），由前端 AutomationHub 每秒轮询同步，跨标签页一致。
 /// </summary>
 public class RemovalCard
 {
@@ -127,6 +133,12 @@ public class RemovalCard
 
     /// <summary>任务下发时间（历史记录保存的时间文本）。</summary>
     public string Time { get; set; } = "";
+
+    /// <summary>申请时间：GRCS 任务完成（FINISHED 事件）时刻，卡片由此生成。</summary>
+    public DateTime? AppliedAt { get; set; }
+
+    /// <summary>信号下发时间：container_remove 确认发送时刻（workflow_state 落库时间，未确认为 null）。</summary>
+    public DateTime? SendAt { get; set; }
 
     /// <summary>是否已确认（已 POST container_remove）。</summary>
     public bool Confirmed { get; set; }

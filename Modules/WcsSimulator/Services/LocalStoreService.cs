@@ -62,35 +62,21 @@ public class LocalStoreService
         try { await js.InvokeVoidAsync("grcsStoreSave", key, value); } catch { }
     }
 
-    /// <summary>批量双写（一次 JS 调用持久化多个 key，减少边界开销）。</summary>
-    public async Task SetManyAsync(IJSRuntime js, params (string Key, string Value)[] items)
-    {
-        foreach (var (key, value) in items)
-            _cache[key] = value;
-        try
-        {
-            foreach (var (key, value) in items)
-                await js.InvokeVoidAsync("grcsStoreSave", key, value);
-        }
-        catch { }
-    }
-
-    /// <summary>预加载的 key 列表（排除巨型 history/ledger key；Skill E 后服务数据已下沉后端）。</summary>
+    /// <summary>预加载的 key 列表（排除巨型 history/ledger key；服务数据已下沉后端）。</summary>
     private static readonly string[] AllKeys =
     [
         // 共享配置
         "grcs_warehouse", "grcs_wcs_url", "grcs_grcs_url",
-        // 自动模式开关
-        "grcs_si_auto_mode", "grcs_ss_auto",
+        // 自动模式开关（进入申请镜像；信号四档开关由后端持久化，前端只读后端快照）
+        "grcs_si_auto_mode",
         // 折叠状态
-        "grcs_si_collapsed", "grcs_ts_collapsed", "grcs_td_collapsed", "grcs_mr_collapsed",
+        "grcs_si_tab", "grcs_ts_collapsed", "grcs_td_collapsed", "grcs_mr_collapsed",
         "grcs_inv_collapsed", "grcs_auto_collapsed",
         "grcs_vehicle_collapsed", "grcs_th_collapsed",
-        // 确认/跟踪集合
-        "grcs_arrival_confirmed", "grcs_si_del_arrival", "grcs_removal_confirmed",
-        "grcs_si_del_removal", "grcs_ss_sent", "grcs_ss_cards",
+        // 确认/跟踪集合（确认状态已下沉后端 workflow_state；此处仅保留标签页内删除恢复区）
+        "grcs_si_del_arrival", "grcs_si_del_removal",
         // 表单/任务状态
-        "grcs_td_state", "grcs_ts_deleted", "grcs_ts_events",
+        "grcs_td_state",
         // 地图缓存（过渡期只读，验收后删）
         "grcs_map_stations",
     ];

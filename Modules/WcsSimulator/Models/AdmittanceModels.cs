@@ -18,6 +18,20 @@ public class FlexibleDateTimeConverter : JsonConverter<DateTime>
         => writer.WriteStringValue(value.ToString("yyyy-MM-dd HH:mm:ss.fff"));
 }
 
+/// <summary>可空宽松 DateTime 转换器（后端 Newtonsoft 输出 "yyyy-MM-dd HH:mm:ss.fff"，null 原样透传）。</summary>
+public class FlexibleNullableDateTimeConverter : JsonConverter<DateTime?>
+{
+    public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        => reader.TokenType == JsonTokenType.Null ? null
+            : DateTime.TryParse(reader.GetString(), out var dt) ? dt : null;
+
+    public override void Write(Utf8JsonWriter writer, DateTime? value, JsonSerializerOptions options)
+    {
+        if (value.HasValue) writer.WriteStringValue(value.Value.ToString("yyyy-MM-dd HH:mm:ss.fff"));
+        else writer.WriteNullValue();
+    }
+}
+
 /// <summary>
 /// WCS 后端 /api/wcs/events 返回的进入申请事件。
 /// 数据流：GRCS 车辆到达接驳位前循环 POST /api/v1/station_entry_request 申请进站；
@@ -45,6 +59,10 @@ public class EntryRequestEvent
     /// <summary>最近一次申请时间（同键重试会刷新为最新时间）。</summary>
     [JsonConverter(typeof(FlexibleDateTimeConverter))]
     public DateTime Time { get; set; }
+
+    /// <summary>决策/放行时间（批准/拒绝或自动放行时刻；未决策为 null）。</summary>
+    [JsonConverter(typeof(FlexibleNullableDateTimeConverter))]
+    public DateTime? DecidedAt { get; set; }
 
     /// <summary>状态：Pending 待确认 / Allowed 已放行 / Rejected 已拒绝 / Approved 已批准（等待 GRCS 下次重试领取）。</summary>
     public string Status { get; set; } = "Pending";

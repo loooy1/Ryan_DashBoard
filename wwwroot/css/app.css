@@ -370,6 +370,12 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
 .stage-meta { font-size: 0.72rem; color: #64748b; }
 .stage-meta code { color: #94a3b8; background: #1e293b; padding: 1px 6px; border-radius: 4px; font-size: 0.7rem; }
 
+/* ── 任务看板（下发历史 + 阶段展开）── */
+.row-clickable { cursor: pointer; }
+.row-clickable:hover { background: #1e293b80; }
+.stage-expand td { background: #0f172a; border-top: 1px dashed #334155; }
+.badge-danger { font-size: 0.7rem; padding: 3px 10px; border-radius: 100px; font-weight: 500; background: #f8717120; color: #f87171; border: 1px solid #f8717140; }
+
 /* ── 分拣完成卡片 ── */
 .sorting-card {
     background: #0f172a; border: 1px solid #334155; border-radius: 10px;
@@ -388,6 +394,75 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
 
 /* ── 地图文件选择按钮 hover 效果 ── */
 .map-file-btn:hover button { border-color: #38bdf8 !important; color: #38bdf8 !important; }
+
+/* ── 信号交互页：类型 tab + 卡片网格 ── */
+.si-type-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 6px 0 14px; }
+@media (max-width: 900px) { .si-type-grid { grid-template-columns: repeat(2, 1fr); } }
+.si-type-card {
+    position: relative;
+    background: linear-gradient(160deg, #131c30 0%, #0f172a 70%);
+    border: 1px solid #2a3a55; border-radius: 12px;
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 5px;
+    cursor: pointer; transition: all 0.18s ease; text-align: left; overflow: hidden;
+}
+.si-type-card::before {
+    content: ""; position: absolute; top: 0; left: 12px; right: 12px; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.55), transparent);
+    opacity: 0.45;
+}
+.si-type-card:hover {
+    border-color: #38bdf8; transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(56, 189, 248, 0.12);
+}
+.si-type-card.on {
+    border-color: #38bdf8;
+    background: linear-gradient(160deg, #0e2a3d 0%, #0b1d30 100%);
+    box-shadow: 0 4px 16px rgba(56, 189, 248, 0.18), inset 0 0 0 1px rgba(56, 189, 248, 0.15);
+}
+.si-type-card.on::after {
+    content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px;
+    border-radius: 0 3px 3px 0; background: #38bdf8; box-shadow: 0 0 8px #38bdf8;
+}
+.si-type-top { display: flex; align-items: center; gap: 8px; }
+.si-type-icon {
+    width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 15px;
+    background: rgba(56, 189, 248, 0.10); border: 1px solid rgba(56, 189, 248, 0.18);
+}
+.si-type-name { font-weight: 600; font-size: 0.85rem; color: #e2e8f0; letter-spacing: 0.01em; }
+.si-type-count { margin-left: auto; }
+.si-type-desc { font-size: 0.66rem; color: #64748b; }
+
+/* 类型内容区顶部的操作栏 */
+.tab-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding-bottom: 10px; border-bottom: 1px solid #1e293b; margin-bottom: 8px;
+}
+
+/* ── 分拣信号编辑弹窗 ── */
+.edit-overlay {
+    position: fixed; inset: 0; z-index: 200;
+    background: rgba(2, 6, 23, 0.78);
+    display: flex; align-items: center; justify-content: center;
+}
+.edit-modal {
+    width: min(540px, 94vw);
+    background: #0f172a; border: 1px solid #334155; border-radius: 14px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+}
+.edit-modal-header {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 16px; border-bottom: 1px solid #334155;
+}
+.edit-modal-title { font-weight: 600; font-size: 0.85rem; color: #e2e8f0; }
+.edit-modal-header code { color: #94a3b8; background: #1e293b; padding: 1px 6px; border-radius: 4px; font-size: 0.72rem; }
+.edit-modal-body { padding: 14px 16px; }
+.edit-modal-body .form-group { margin-bottom: 0; }
+.edit-modal-footer {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 12px 16px; border-top: 1px solid #1e293b;
+}
 
 /* ── 站点地图框选器（StationMapPicker）── */
 .smp-overlay {

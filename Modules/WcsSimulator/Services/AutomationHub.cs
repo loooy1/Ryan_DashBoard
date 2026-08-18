@@ -1,4 +1,5 @@
 using GRCS.Dashboard.Modules.WcsSimulator.Models;
+using GRCS.Dashboard.Services;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
@@ -7,11 +8,15 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 /// 每 1 秒拉一次 /api/wcs/auto/status 快照 + /api/wcs/auto/logs?sinceId 增量日志，
 /// 以及进入申请 /api/wcs/status + /api/wcs/events（信号交互页进入信号多标签页同步）。
 /// AutoRunService / ContainerTaskService / SignalAutoService 三个瘦壳共享同一份数据与 Changed 事件。
+/// 同时兼任后端健康探测源：每轮把 WCS（/api/wcs/status）与 GRCS（/api/wcs/grcs/health 代理）
+/// 状态回报给 BackendHealthService（BackendStatus 渲染 + 各页面连接判定，单一数据源）。
+/// 常驻：由 MainLayout 注入启动，任何页面打开即轮询。
 /// </summary>
 public class AutomationHub : IDisposable
 {
     private const int MaxLogs = 500;
     private readonly WcsApiClient _api;
+    private readonly BackendHealthService _health;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _loop;
     private long _logWatermark;
@@ -29,11 +34,29 @@ public class AutomationHub : IDisposable
     public bool AdmittanceOnline { get; private set; } = true;
     public List<EntryRequestEvent> EntryEvents { get; } = [];
 
+    // ── 信号确认状态（kind → 行；跨标签页同步，SignalInteraction 确认/已发送集合的事实源）──
+    public Dictionary<string, List<WorkflowStateRowDto>> ConfirmState { get; private set; } = [];
+
+    /// <summary>某 kind 的全部已确认 TaskId 集合。</summary>
+    public HashSet<string> ConfirmedIds(string kind)
+        => ConfirmState.TryGetValue(kind, out var rows) ? rows.Select(r => r.TaskId).ToHashSet(StringComparer.OrdinalIgnoreCase) : [];
+
+    /// <summary>分拣 sent 行的编辑参数（未发送/不存在返回 null）。</summary>
+    public SortingSendParams? SentParams(string taskId)
+    {
+        if (!ConfirmState.TryGetValue("sent", out var rows)) return null;
+        var row = rows.FirstOrDefault(r => r.TaskId == taskId);
+        if (row?.Value is not string v || string.IsNullOrWhiteSpace(v)) return null;
+        try { return System.Text.Json.JsonSerializer.Deserialize<SortingSendParams>(v, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
+        catch { return null; }
+    }
+
     public event Action? Changed;
 
-    public AutomationHub(WcsApiClient api)
+    public AutomationHub(WcsApiClient api, BackendHealthService health)
     {
         _api = api;
+        _health = health;
         _loop = LoopAsync(_cts.Token);
     }
 
@@ -46,6 +69,9 @@ public class AutomationHub : IDisposable
             try { await Task.Delay(1000, ct); } catch { return; }
         }
     }
+
+    /// <summary>兼容入口：循环已在构造函数启动，此方法不再做事（MainLayout 注入时调用以确保实例创建）。</summary>
+    public Task EnsureStartedAsync() => Task.CompletedTask;
 
     /// <summary>立即拉一轮（手动操作后调用，避免等下一拍）。</summary>
     public async Task RefreshNowAsync()
@@ -87,10 +113,15 @@ public class AutomationHub : IDisposable
         var range = await _api.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
         if (range != null) Range = range;
 
-        // 进入申请（信号交互页徽章 + 事件表）
+        // 进入申请（信号交互页徽章 + 事件表）；同时回报后端健康（比 BackendHealthService 的 15s 探测更实时）
         var adm = await _api.GetAsync<AdmittanceStatusDto>("/api/wcs/status");
         if (adm != null) { PendingCount = adm.PendingCount; AdmittanceAutoMode = adm.AutoMode; AdmittanceOnline = true; }
         else AdmittanceOnline = false;
+        _health.ReportWcs(adm != null);
+
+        // 信号确认状态（跨标签页同步，SignalInteraction 事实源）
+        var wf = await _api.GetAsync<Dictionary<string, List<WorkflowStateRowDto>>>("/api/wcs/signal-confirm");
+        if (wf != null) ConfirmState = wf;
         var evts = await _api.GetAsync<List<EntryRequestEvent>>("/api/wcs/events");
         if (evts != null)
         {
@@ -121,6 +152,10 @@ public class AutomationHub : IDisposable
             }
             _logWatermark = Math.Max(_logWatermark, resp?.MaxId ?? 0);
         }
+
+        // 健康探测：GRCS 经 WCS 代理轻量探测（后端 2s 短超时）→ 回报共享健康服务
+        var grcs = await _api.GetAsync<GrcsProxyResult>("/api/wcs/grcs/health");
+        _health.ReportGrcs(grcs?.Ok == true);
         Changed?.Invoke();
     }
 

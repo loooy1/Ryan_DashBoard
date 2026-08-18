@@ -1,4 +1,4 @@
-@inject HttpClient Http
+@inject BackendHealthService Health
 @inject NavigationManager NavManager
 @implements IDisposable
 
@@ -10,65 +10,33 @@
    当前正在渲染的页面（@Body）也跟着整树重渲染，交互多时能感觉到卡顿。
    独立后只有本组件每 15 秒重渲染自己，页面树完全不受影响。
 
-   探测语义：能拿到任何 HTTP 状态码就算在线（不关心业务响应内容）；
-   3 秒内无响应视为离线（短超时让"离线红点"出现得更快，全局 HttpClient 的
-   10s 超时在这里不适用，故用本组件的 CancellationTokenSource 单独控制）。
-   null=未知（首次探测前）/ true=在线 / false=离线。
+   数据源：BackendHealthService（单一数据源）。本组件不再自己探测，
+   只订阅该服务渲染状态；AutomationHub 每 1s 回报的 /api/wcs/status 结果
+   让 WCS 后端状态比 15 秒探测更实时。null=未知（首次探测前）/ true=在线 / false=离线。
    ════════════════════════════════════════════════ *@
 <div class="sidebar-status">
     <div class="ss-card" title="WCS 后端管理接口 — http://localhost:8230">
-        <span class="ss-dot @DotClass(_wcsOnline)"></span>
+        <span class="ss-dot @DotClass(Health.WcsOnline)"></span>
         <span class="ss-name">WCS 后端</span>
-        <span class="ss-state @DotStateClass(_wcsOnline)">@DotStateText(_wcsOnline)</span>
+        <span class="ss-state @DotStateClass(Health.WcsOnline)">@DotStateText(Health.WcsOnline)</span>
         <span class="ss-port">8230</span>
     </div>
     <div class="ss-card" title="GRCS 后端接口 — http://localhost:8224">
-        <span class="ss-dot @DotClass(_grcsOnline)"></span>
+        <span class="ss-dot @DotClass(Health.GrcsOnline)"></span>
         <span class="ss-name">GRCS 后端</span>
-        <span class="ss-state @DotStateClass(_grcsOnline)">@DotStateText(_grcsOnline)</span>
+        <span class="ss-state @DotStateClass(Health.GrcsOnline)">@DotStateText(Health.GrcsOnline)</span>
         <span class="ss-port">8224</span>
     </div>
     <div class="ss-front" title="WCS 前端当前运行地址">前端 · @NavManager.BaseUri</div>
 </div>
 
 @code {
-    // null=未知 / true=在线 / false=离线
-    private bool? _wcsOnline;
-    private bool? _grcsOnline;
-    private System.Threading.Timer? _probeTimer;
-    private const string WcsProbeUrl = "http://localhost:8230/api/wcs/status";
-    private const string GrcsProbeUrl = "http://localhost:8224/";
-    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(3);  // 探测短超时，离线快速变红点
-
-    protected override async Task OnInitializedAsync()
+    protected override void OnInitialized()
     {
-        await ProbeEndpointsAsync();
-        // 每 15 秒刷新一次连接状态（端点故障时自动变红点）
-        _probeTimer = new System.Threading.Timer(async _ => await ProbeEndpointsAsync(),
-            null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
+        Health.Changed += OnChanged;
     }
 
-    private async Task ProbeEndpointsAsync()
-    {
-        _wcsOnline = await ProbeAsync(WcsProbeUrl);
-        _grcsOnline = await ProbeAsync(GrcsProbeUrl);
-        StateHasChanged();
-    }
-
-    /// <summary>探测一个端点：能建立 HTTP 连接（拿到任何状态码）就算在线；3 秒无响应视为离线。</summary>
-    private async Task<bool?> ProbeAsync(string url)
-    {
-        try
-        {
-            using var cts = new CancellationTokenSource(ProbeTimeout);
-            using var resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    private void OnChanged() => InvokeAsync(StateHasChanged);
 
     private static string DotClass(bool? online) => online switch
     {
@@ -93,7 +61,6 @@
 
     public void Dispose()
     {
-        _probeTimer?.Dispose();
-        _probeTimer = null;
+        Health.Changed -= OnChanged;
     }
 }

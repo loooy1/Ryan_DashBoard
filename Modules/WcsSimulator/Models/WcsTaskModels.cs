@@ -174,6 +174,7 @@ public static class TaskTypeRegistry
         // ── 库内分拣 ──
         new("SORTING",       "分拣-段1：搬运带载", "AMR库→分拣台",  2, ["货物库位","分拣台"]),
         // 段2 由 RCS 自生成，WCS 不需要发
+        new("SORTING_RETURN", "分拣-回库", "分拣台→AMR库", 1, ["分拣台","回库库位"]),
 
         // ── 其他 ──
         new("STOCK_TRANSFER", "移库", "库位→库位", 2, ["源库位","目标库位"]),

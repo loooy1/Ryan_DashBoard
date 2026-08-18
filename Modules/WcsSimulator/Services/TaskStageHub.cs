@@ -1,177 +1,128 @@
-using System.Text.Json;
 using GRCS.Dashboard.Modules.WcsSimulator.Models;
 using Microsoft.JSInterop;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
-/// 任务阶段事件共享轮询器（scoped = 每个浏览器标签页一个实例）。
-///
-/// ── 为什么存在 ──
-/// 优化前有 6 处各自轮询 /api/wcs/task-stages：AutoRunService（5s 一轮）、SignalAutoService（3s 一轮）、
-/// ContainerTaskService（每个在途任务 1s×N 个并发）、StationLockService（每次分配站点前）、
-/// 任务看板页（3s 定时器）、信号交互页（每次刷新一次全量）。自动化跑起来时每秒 N+ 个重复 HTTP，
-/// 自己跟自己抢带宽，页面响应变慢。本服务把这 N 个轮询收敛成全应用唯一的一个。
+/// 任务阶段事件共享服务（scoped = 每个浏览器标签页一个实例）。
+/// 通过 SignalR 长连接（WCS 后端 /hubs/task-stages）实时接收任务阶段事件，
+/// 取代旧版的 HTTP 轮询（/api/wcs/task-stages?sinceId=N）。
 ///
 /// ── 数据流 ──
-/// 1. 首次启动拉全量（WCS 后端默认返回最近 200 条），此后每轮带 sinceId 增量拉取（配合
-///    /api/wcs/task-stages?sinceId=N，只传增量几条，见 GrcsBackend TaskStageService.GetEventsSince）；
-/// 2. 新事件按自增 Id 水位合并进内存缓存（上限 MaxCache 条），FINISHED 任务号同步进 FinishedTaskIds；
-/// 3. 合并后触发 Changed：WaitFinishedAsync 的等待者据此唤醒，订阅的页面据此刷新 UI。
-/// 消费方全部零 HTTP 读缓存，WCS 后端每秒最多只收到 1 个请求。
+/// 1. 连接建立（EnsureStartedAsync，MainLayout 注入调用）→ 后端回放当前事件快照（EventsReset）；
+/// 2. 后端每收到一条 GRCS task_stage_change 即广播 EventAdded → 本服务合并进缓存并触发 Changed；
+/// 3. 其它标签页删除任务 → 广播 TaskRemoved → 同步清本地缓存（防等待者基于陈旧 FINISHED 误判）。
+/// 4. 断线自动重连（JS 端 withAutomaticReconnect），重连成功后再收 EventsReset 对账。
 ///
-/// ── 自适应节拍 ──
-/// 有等待者（两段式流程在等段1 FINISHED）时 1 秒/轮，感知延迟与旧行为一致；
-/// 空闲时降到 3 秒/轮，展示场景足够，进一步给后端减负。
-///
-/// ── 健壮性 ──
-/// WCS 后端事件是内存态，重启后事件 Id 从 1 重新开始（Id 回绕）。连续 15 轮增量无结果、
-/// 或每 60 轮周期，强制全量对账一次；若发现服务端最大 Id 小于本地水位，判定后端重启，
-/// 整表替换，防止缓存永远停在旧数据上。
-/// 前端删除事件（任务看板/信号交互的删除按钮）后必须调用 RemoveTask/ClearAll 同步本地缓存，
-/// 否则等待者会基于已删除的 FINISHED 事件误判任务完成、提前下发段2。
+/// 消费方全部零 HTTP：事件看板、信号交互页（到达/移除/分拣卡片）、两段式任务等待（WaitFinishedAsync）。
+/// 连接状态用 IsOnline 暴露（true = 实时推送可用，与后端存活判定无关，后端存活判定走 BackendHealthService）。
 /// </summary>
 public class TaskStageHub : IDisposable
 {
     private const string WcsUrlKey = "grcs_wcs_url";
     private const string DefaultWcsUrl = "http://localhost:8230";
     private const int MaxCache = 1000;          // 前端缓存上限（足够覆盖活跃任务）
-    private const int ActiveIntervalMs = 1000;  // 有等待者时的轮询间隔
-    private const int IdleIntervalMs = 3000;    // 无等待者时的轮询间隔
-    private const int FullRefreshEveryTicks = 60;   // 每 60 轮强制全量对账（防后端重启后 Id 回绕）
-    private const int EmptyTicksBeforeFull = 15;    // 连续 15 轮无增量也触发全量（后端重启/清空检测）
 
-    private static readonly JsonSerializerOptions Opts = new() { PropertyNameCaseInsensitive = true };
-
-    private readonly IWcsService _wcs;
+    private readonly IJSRuntime _js;
     private readonly LocalStoreService _store;
-    private CancellationTokenSource? _cts;
+    private readonly object _lock = new();
+    private DotNetObjectReference<TaskStageHub>? _ref;
     private bool _started;
-
     private List<StageChangeEvent> _events = [];
     private readonly HashSet<string> _finished = new(StringComparer.OrdinalIgnoreCase);
-    private long _lastId;
-    private int _waiters;
-    private int _ticksSinceFull;
-    private int _emptyTicks;
 
-    /// <summary>事件缓存（按 Id 正序，最多 MaxCache 条）。</summary>
+    /// <summary>事件缓存（按到达顺序，最多 MaxCache 条）。</summary>
     public IReadOnlyList<StageChangeEvent> Events => _events;
 
     /// <summary>已 FINISHED 的任务号集合（大小写不敏感）。</summary>
     public HashSet<string> FinishedTaskIds => _finished;
 
-    /// <summary>最近一次轮询是否成功（false = 后端连不上）。</summary>
-    public bool IsOnline { get; private set; } = true;
+    /// <summary>SignalR 连接是否可用（true = 实时推送中）。</summary>
+    public bool IsOnline { get; private set; }
 
-    /// <summary>新事件合并入缓存时触发（订阅者据此刷新 UI / 唤醒等待者）。</summary>
+    /// <summary>新事件合并/状态变化时触发（订阅者据此刷新 UI / 唤醒等待者）。</summary>
     public event Action? Changed;
 
-    public TaskStageHub(IWcsService wcs, LocalStoreService store)
+    public TaskStageHub(IJSRuntime js, LocalStoreService store)
     {
-        _wcs = wcs;
+        _js = js;
         _store = store;
     }
 
-    /// <summary>启动后台轮询（幂等，首次调用时拉一次全量）。</summary>
+    /// <summary>建立 SignalR 连接（幂等；MainLayout 注入时调用，保证每个标签页常驻）。</summary>
     public async Task EnsureStartedAsync()
     {
         if (_started) return;
         _started = true;
-        _cts = new CancellationTokenSource();
-        await PollOnceAsync();
-        _ = LoopAsync(_cts.Token);
-    }
-
-    private async Task LoopAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested)
+        try
         {
-            var delay = Volatile.Read(ref _waiters) > 0 ? ActiveIntervalMs : IdleIntervalMs;
-            try { await Task.Delay(delay, ct); }
-            catch { return; }
-            try { await PollOnceAsync(); }
-            catch { /* 单轮失败下轮重试 */ }
+            _ref = DotNetObjectReference.Create(this);
+            await _js.InvokeVoidAsync("grcsTaskStage.setRef", _ref);
+            await _js.InvokeVoidAsync("grcsTaskStage.connect", ResolveHubUrl());
+        }
+        catch (Exception ex)
+        {
+            try { await _js.InvokeVoidAsync("console.error", $"[TaskStageHub] 启动失败: {ex.Message}"); } catch { }
         }
     }
 
-    /// <summary>
-    /// 拉一轮。三种分支：
-    /// 1. 增量（默认）：?sinceId=本地水位，只收 Id 更大的新事件；
-    /// 2. 周期对账（每 60 轮）：全量拉取后按 Id 水位去重合并；
-    /// 3. 重启恢复（连续 15 轮增量空手、或对账发现服务端最大 Id &lt; 本地水位）：
-    ///    后端事件 Id 已回绕，清空本地缓存整表替换。
-    /// </summary>
-    private async Task PollOnceAsync()
+    private string ResolveHubUrl()
     {
-        _ticksSinceFull++;
-        var useIncremental = _lastId > 0
-            && _ticksSinceFull < FullRefreshEveryTicks
-            && _emptyTicks < EmptyTicksBeforeFull;
-
-        var (ok, _, json) = await _wcs.GetTaskStageEventsAsync(ResolveBaseUrl(), useIncremental ? _lastId : 0);
-        if (!ok || string.IsNullOrEmpty(json)) { IsOnline = false; _emptyTicks++; return; }
-        IsOnline = true;
-
-        List<StageChangeEvent>? fetched = null;
-        try { fetched = JsonSerializer.Deserialize<List<StageChangeEvent>>(json, Opts); }
-        catch { }
-        if (fetched is not { Count: > 0 }) { _emptyTicks++; return; }
-
-        var maxFetched = fetched.Max(e => e.Id);
-
-        if (useIncremental)
-        {
-            // 正常增量：只收 Id 大于水位的
-            var fresh = fetched.Where(e => e.Id > _lastId).ToList();
-            if (fresh.Count == 0) { _emptyTicks++; return; }
-            _emptyTicks = 0;
-            Merge(fresh);
-            _lastId = Math.Max(_lastId, fresh.Max(e => e.Id));
-        }
-        else
-        {
-            if (maxFetched < _lastId)
-            {
-                // 后端重启/清空导致 Id 回绕：整表替换
-                _events.Clear();
-                _finished.Clear();
-                Merge(fetched);
-            }
-            else
-            {
-                // 周期对账：与缓存合并（去重靠 Id 水位）
-                Merge(fetched.Where(e => e.Id > _lastId).ToList());
-            }
-            _lastId = maxFetched;
-            _ticksSinceFull = 0;
-            _emptyTicks = 0;
-        }
+        var url = _store[WcsUrlKey];
+        var baseUrl = string.IsNullOrEmpty(url) || url == "null" ? DefaultWcsUrl : url;
+        return baseUrl.TrimEnd('/') + "/hubs/task-stages";
     }
 
-    private void Merge(List<StageChangeEvent> fresh)
+    /// <summary>后端广播：单条新事件。</summary>
+    [JSInvokable]
+    public void OnEventAdded(StageChangeEvent evt)
     {
-        if (fresh.Count == 0) return;
-        _events.AddRange(fresh);
-        if (_events.Count > MaxCache)
-            _events.RemoveRange(0, _events.Count - MaxCache);
-        foreach (var e in fresh)
-            if (string.Equals(e.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(e.TaskId))
-                _finished.Add(e.TaskId);
+        if (evt == null || string.IsNullOrEmpty(evt.TaskId)) return;
+        lock (_lock)
+        {
+            _events.Add(evt);
+            if (_events.Count > MaxCache) _events.RemoveRange(0, _events.Count - MaxCache);
+            if (string.Equals(evt.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase))
+                _finished.Add(evt.TaskId);
+        }
         Changed?.Invoke();
     }
 
-    private string ResolveBaseUrl()
+    /// <summary>后端广播：全量快照（连接建立/清空后对账）→ 整表替换。</summary>
+    [JSInvokable]
+    public void OnEventsReset(List<StageChangeEvent>? evts)
     {
-        var url = _store[WcsUrlKey];
-        return string.IsNullOrEmpty(url) || url == "null" ? DefaultWcsUrl : url;
+        lock (_lock)
+        {
+            _events = evts ?? [];
+            if (_events.Count > MaxCache) _events.RemoveRange(0, _events.Count - MaxCache);
+            _finished.Clear();
+            foreach (var e in _events)
+                if (string.Equals(e.Stage, "FINISHED", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(e.TaskId))
+                    _finished.Add(e.TaskId);
+        }
+        Changed?.Invoke();
+    }
+
+    /// <summary>后端广播：某任务被删除（其它标签页操作）→ 同步本地缓存。</summary>
+    [JSInvokable]
+    public void OnTaskRemoved(string taskId)
+    {
+        if (string.IsNullOrEmpty(taskId)) return;
+        RemoveTask(taskId);
+    }
+
+    /// <summary>JS 回报连接状态：connected / reconnecting / disconnected。</summary>
+    [JSInvokable]
+    public void OnStateChanged(string state)
+    {
+        IsOnline = state == "connected" || state == "reconnecting";
+        Changed?.Invoke();
     }
 
     /// <summary>
-    /// 等待任务到达 FINISHED 阶段（替代旧的"每个等待者各自 1s 轮询"实现）。
-    /// 订阅 Changed 事件，任务完成即唤醒；订阅前/后各检查一次缓存，防竞态丢事件。
-    /// 等待期间把 _waiters 计数 +1，让轮询节拍自动提到 1s。
-    /// 无超时——等待多久由业务决定（用户明确不加超时）。
+    /// 等待任务到达 FINISHED 阶段（与后端进程内 WaitFinishedAsync 语义对齐，供前端两段式流程用）。
+    /// 订阅 Changed 事件，FINISHED 到达即唤醒；订阅前/后各检查一次缓存，防竞态丢事件。
     /// </summary>
     public async Task WaitFinishedAsync(string taskId)
     {
@@ -184,7 +135,6 @@ public class TaskStageHub : IDisposable
             if (_finished.Contains(taskId)) tcs.TrySetResult();
         }
 
-        Interlocked.Increment(ref _waiters);
         Changed += Handler;
         try
         {
@@ -193,38 +143,32 @@ public class TaskStageHub : IDisposable
         }
         finally
         {
-            Interlocked.Decrement(ref _waiters);
             Changed -= Handler;
         }
     }
 
-    /// <summary>后端删除某任务的事件后调用：同步清掉本地缓存，防止等待者基于陈旧数据误判。</summary>
+    /// <summary>删除某任务的事件后调用：同步清掉本地缓存，防止等待者基于陈旧数据误判。</summary>
     public void RemoveTask(string taskId)
     {
-        _events.RemoveAll(e => string.Equals(e.TaskId, taskId, StringComparison.OrdinalIgnoreCase));
-        _finished.Remove(taskId);
+        lock (_lock)
+        {
+            _events.RemoveAll(e => string.Equals(e.TaskId, taskId, StringComparison.OrdinalIgnoreCase));
+            _finished.Remove(taskId);
+        }
         Changed?.Invoke();
     }
 
-    /// <summary>后端清空全部事件后调用：本地缓存同步清空（后端 Id 单调不回绕，水位保留）。</summary>
+    /// <summary>清空全部事件后调用：本地缓存同步清空。</summary>
     public void ClearAll()
     {
-        _events.Clear();
-        _finished.Clear();
+        lock (_lock) { _events.Clear(); _finished.Clear(); }
         Changed?.Invoke();
-    }
-
-    /// <summary>手动强制全量刷新（清空全部事件后调用，立即对账）。</summary>
-    public async Task RefreshNowAsync()
-    {
-        _ticksSinceFull = FullRefreshEveryTicks;  // 下一轮强制走全量
-        await PollOnceAsync();
     }
 
     public void Dispose()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
-        _cts = null;
+        try { _js.InvokeVoidAsync("grcsTaskStage.disconnect"); } catch { }
+        _ref?.Dispose();
+        _ref = null;
     }
 }

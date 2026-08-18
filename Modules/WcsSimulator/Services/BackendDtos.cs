@@ -86,6 +86,14 @@ public class AdmittanceStatusDto
     public int PendingCount { get; set; }
 }
 
+/// <summary>WCS 代理响应（/api/wcs/grcs/* 统一返回 { ok, code, json }）。</summary>
+public class GrcsProxyResult
+{
+    public bool Ok { get; set; }
+    public int Code { get; set; }
+    public string Json { get; set; } = "";
+}
+
 public class LogsResponse
 {
     public long MaxId { get; set; }
@@ -115,4 +123,28 @@ public class MapUploadPayload
     public string SavedAt { get; set; } = "";
     public int PathsCount { get; set; }
     public List<GRCS.Dashboard.Modules.WcsSimulator.Models.MapStationLite> Stations { get; set; } = [];
+}
+
+/// <summary>信号确认状态行（GET /api/wcs/signal-confirm，workflow_state 表行）。</summary>
+public class WorkflowStateRowDto
+{
+    public string Kind { get; set; } = "";
+    public string TaskId { get; set; } = "";
+    public string? Value { get; set; }
+    public string Time { get; set; } = "";
+}
+
+/// <summary>信号确认抢占响应（POST /api/wcs/signal-confirm/{kind}/{taskId}）。</summary>
+public class ClaimResponse
+{
+    public bool Claimed { get; set; }
+}
+
+/// <summary>分拣已发送的编辑参数（workflow_state sent 行的 value JSON）。</summary>
+public class SortingSendParams
+{
+    public string ReturnTaskId { get; set; } = "";
+    public bool RemoveContainer { get; set; }
+    public string DestStation { get; set; } = "";
+    public string DestArea { get; set; } = "";
 }

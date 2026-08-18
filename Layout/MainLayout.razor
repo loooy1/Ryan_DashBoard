@@ -3,6 +3,8 @@
 @inject NavigationManager NavManager
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
+@inject TaskStageHub StageHub
+@inject AutomationHub AutoHub
 @implements IDisposable
 
 @* ═══════════════════════════════════════════════════════
@@ -96,6 +98,12 @@
     {
         await LocalStore.PreloadAsync(Js);
 
+        // 常驻轮询：TaskStageHub/AutomationHub 构造即启动，这里确保每个标签页打开任意页面时它们已被创建。
+        // TaskStageHub → /api/wcs/task-stages；AutomationHub → 5 个自动化/进入申请接口 +
+        // 兼任后端健康探测源（喂 BackendHealthService，连接判定与侧边栏绿点同源）。
+        _ = StageHub.EnsureStartedAsync();
+        _ = AutoHub.EnsureStartedAsync();
+
         Nav.StateChanged += OnNavStateChanged;
     }
 
@@ -127,7 +135,6 @@
                     new("自动化任务", "wcs-simulator/automation", "🤖"),
                     new("任务看板", "wcs-simulator/task-stages", "📊"),
                     new("信号交互", "wcs-simulator/signal-interaction", "📶"),
-                    new("任务下发历史", "wcs-simulator/history", "📋"),
                 });
                 // 同时跳转到该项目的默认页面
                 NavManager.NavigateTo("wcs-simulator/dispatch");
