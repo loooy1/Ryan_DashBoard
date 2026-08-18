@@ -22,15 +22,12 @@ public interface IWcsService
 
     // ── 库存查询 ──
 
-    /// <summary>查询容器库存（GET /api/Cargo，支持按容器编码 / 场景 / 锁定状态过滤 + 分页）。</summary>
+    /// <summary>查询容器库存（GET /api/Cargo，支持按容器编码 / 锁定状态过滤 + 分页；场景按后端设置）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> QueryCargoInventoryAsync(
         string baseUrl, string? code = null, string? scene = null, string? locked = null,
         int pageNo = 1, int pageSize = 2000);
 
-    /// <summary>删除容器库存（DELETE /api/Cargo/{id}）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> DeleteCargoAsync(string baseUrl, int id);
-
-    /// <summary>自动生成容器入库（GET /AutoContainerEnter）。</summary>
+    /// <summary>自动生成容器入库（GET /AutoContainerEnter，场景按后端设置）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> AutoContainerEnterAsync(string baseUrl, string sceneName,
         string prefix = "container", int num = -1, int floor = -1, int type = 1);
 
@@ -61,19 +58,10 @@ public interface IWcsService
 
     // ── 接驳位审批（WCS 后端管理接口 /api/wcs）──
 
-    /// <summary>查询准入状态：自动模式 + 待确认数（GET /api/wcs/status）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> GetAdmittanceStatusAsync(string baseUrl);
-
-    /// <summary>查询进入申请事件列表（GET /api/wcs/events）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> GetAdmittanceEventsAsync(string baseUrl);
-
     /// <summary>批准/拒绝进入申请（POST /api/wcs/decisions/{key}）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> DecideEntryAsync(string baseUrl, string key, bool allow);
     /// <summary>删除进入申请事件（DELETE /api/wcs/events/{key}）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> DeleteEntryEventAsync(string baseUrl, string key);
     /// <summary>清空全部进入申请事件（DELETE /api/wcs/events）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> ClearEntryEventsAsync(string baseUrl);
-
-    /// <summary>切换准入模式：auto=true 全自动放行，false 手动确认（POST /api/wcs/mode）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> SetAdmittanceModeAsync(string baseUrl, bool auto);
 }

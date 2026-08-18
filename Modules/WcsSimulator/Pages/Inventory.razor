@@ -20,17 +20,9 @@
     {
 
     <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
-            <label>GRCS 服务器地址</label>
-            <input type="text" @bind="_cargoBaseUrl" placeholder="http://localhost:8224">
-        </div>
         <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
             <label>容器编码</label>
             <input type="text" @bind="_cargoCodeFilter" placeholder="留空=全部">
-        </div>
-        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
-            <label>场景</label>
-            <input type="text" @bind="_cargoSceneFilter" placeholder="留空=全部">
         </div>
         <div class="form-group" style="width:110px;flex-shrink:0;">
             <label>锁定状态</label>
@@ -40,6 +32,7 @@
                 <option value="false">未锁</option>
             </select>
         </div>
+        <div class="hint-text" style="padding-bottom:6px;">GRCS 地址/场景名按「地图信息」页系统设置</div>
     </div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap;">
         <button class="btn btn-primary" @onclick="QueryInventory" disabled="@_cargoLoading">🔍 查询</button>
@@ -56,8 +49,6 @@
 
     @if (_cargoItems.Count > 0)
     {
-        <div class="hint-text" style="margin-top:12px;">GRCS 未开放删除 API，可以在 GRCS 货物实例界面删除</div>
-
         <div style="overflow-x:auto;margin-top:8px;">
             <table class="data-table">
                 <thead>
@@ -116,10 +107,6 @@
     @if (!IsCollapsed("inv_auto"))
     {
     <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
-            <label>场景名称</label>
-            <input type="text" @bind="_autoSceneName" placeholder="Show">
-        </div>
         <div class="form-group" style="flex:1;min-width:100px;max-width:150px;">
             <label>容器前缀</label>
             <input type="text" @bind="_autoPrefix" placeholder="SimContainer_">
@@ -146,7 +133,7 @@
         </button>
         <button class="btn btn-outline" @onclick="ResetAuto">🔄 重置条件</button>
     </div>
-    <div class="hint-text" style="margin-top:4px;">调用 GRCS /AutoContainerEnter 接口，在空闲 RACK 储位上批量生成容器</div>
+    <div class="hint-text" style="margin-top:4px;">调用 GRCS /AutoContainerEnter 接口（场景名按「地图信息」页系统设置），在空闲 RACK 储位上批量生成容器</div>
     }
 </div>
 
@@ -164,9 +151,7 @@
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     // ── 库存查询 ──
-    private string _cargoBaseUrl = "http://localhost:8224";
     private string _cargoCodeFilter = "";
-    private string _cargoSceneFilter = "";
     private string _cargoLockedFilter = "";
     private List<CargoInventoryItem> _cargoItems = [];
     private int _cargoTotal;
@@ -178,8 +163,7 @@
     private const int CargoPageSize = 200;   // 分页拉取：每页 200 条，避免一次渲染数千行
     private int _cargoPageNo = 1;
 
-    // ── 模拟增加库存 ──
-    private string _autoSceneName = "Show";
+    // ── 模拟增加库存（场景名按「地图信息」页系统设置）──
     private string _autoPrefix = "SimCargo_";
     private int _autoNum = 1;
     private int _autoFloor = 1;
@@ -194,7 +178,6 @@
 
     private void ResetAuto()
     {
-        _autoSceneName = "Show";
         _autoPrefix = "SimCargo_";
         _autoNum = 1;
         _autoFloor = 1;
@@ -222,8 +205,6 @@
         try
         {
             string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
-            if (V("grcs_warehouse") is string wh) _autoSceneName = wh;
-            if (V("grcs_grcs_url") is string grcs) _cargoBaseUrl = grcs;
             // 切到模块时始终折叠，不恢复之前展开状态
             if (V("grcs_cargo_inventory") is string cargoJson)
             {
@@ -250,14 +231,13 @@
     /// </summary>
     private async Task QueryInventory()
     {
-        if (string.IsNullOrWhiteSpace(_cargoBaseUrl)) { _cargoError = "请填写服务器地址"; return; }
         _cargoLoading = true;
         _cargoError = "";
         _cargoQueried = true;
         try
         {
             var (ok, code, json) = await WcsService.QueryCargoInventoryAsync(
-                _cargoBaseUrl, _cargoCodeFilter, _cargoSceneFilter, _cargoLockedFilter,
+                "", _cargoCodeFilter, null, _cargoLockedFilter,
                 pageNo: 1, pageSize: CargoPageSize);
             if (!ok)
             {
@@ -302,7 +282,7 @@
         {
             var next = _cargoPageNo + 1;
             var (ok, code, json) = await WcsService.QueryCargoInventoryAsync(
-                _cargoBaseUrl, _cargoCodeFilter, _cargoSceneFilter, _cargoLockedFilter,
+                "", _cargoCodeFilter, null, _cargoLockedFilter,
                 pageNo: next, pageSize: CargoPageSize);
             if (!ok) { _cargoError = $"HTTP {code}"; return; }
             var result = JsonSerializer.Deserialize<CargoQueryResult>(json, JsonOpts);
@@ -324,7 +304,6 @@
     private void ResetCargoFilter()
     {
         _cargoCodeFilter = "";
-        _cargoSceneFilter = "";
         _cargoLockedFilter = "";
         _cargoItems = [];
         _cargoTotal = 0;
@@ -332,48 +311,12 @@
         _cargoError = "";
     }
 
-    /// <summary>删除单个容器。</summary>
-    private async Task DeleteCargo(CargoInventoryItem cargo)
-    {
-        var (ok, code, json) = await WcsService.DeleteCargoAsync(_cargoBaseUrl, cargo.Id);
-        ShowFeedback(ok ? "✅" : "❌",
-            ok
-                ? $"已删除 {cargo.Code}（id={cargo.Id}）HTTP {code}"
-                : $"删除 {cargo.Code} 失败 HTTP {code}\n\n{json}");
-        if (ok)
-        {
-            _cargoItems.Remove(cargo);
-            _cargoTotal = Math.Max(0, _cargoTotal - 1);
-            await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
-            await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
-        }
-    }
-
-    /// <summary>一键删除当前列表中所有容器。</summary>
-    private async Task DeleteAll()
-    {
-        if (_cargoItems.Count == 0) return;
-        var toDelete = _cargoItems.ToList();
-        int okCount = 0;
-        int failCount = 0;
-        foreach (var cargo in toDelete)
-        {
-            var (ok, _, _) = await WcsService.DeleteCargoAsync(_cargoBaseUrl, cargo.Id);
-            if (ok) { okCount++; _cargoItems.Remove(cargo); }
-            else { failCount++; }
-        }
-        _cargoTotal = Math.Max(0, _cargoTotal - okCount);
-        ShowFeedback(failCount == 0 ? "✅" : "⚠️", $"删除完成：{okCount} 成功 / {failCount} 失败");
-        await LocalStore.SetAsync(Js, "grcs_cargo_inventory", JsonSerializer.Serialize(_cargoItems));
-        await LocalStore.SetAsync(Js, "grcs_cargo_inventory_total", _cargoTotal.ToString());
-    }
-
-    /// <summary>调用 /AutoContainerEnter 批量生成容器库存。</summary>
+    /// <summary>调用 /AutoContainerEnter 批量生成容器库存（场景名按系统设置）。</summary>
     private async Task AutoEnter()
     {
         _autoLoading = true;
         var (ok, code, json) = await WcsService.AutoContainerEnterAsync(
-            _cargoBaseUrl, _autoSceneName, _autoPrefix, _autoNum, _autoFloor, _autoType);
+            "", "", _autoPrefix, _autoNum, _autoFloor, _autoType);
         ShowFeedback(ok ? "✅" : "❌",
             ok
                 ? $"容器已生成 HTTP {code}\n\n{json}"

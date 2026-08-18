@@ -5,261 +5,187 @@ using GRCS.Dashboard.Modules.WcsSimulator.Models;
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
-/// WCS 服务的 HTTP 实现：直接 POST JSON 到 GRCS 后端。
-/// 对接真实后端时改 Program.cs 里的 DI 注册即可。
+/// WCS 服务 HTTP 实现（GRCS 对接全部经 GrcsBackend 代理，前端不再直连 GRCS 8224）。
+/// baseUrl 派生路径：GRCS 类接口走 /api/wcs/grcs/*（GRCS 地址/场景名由后端设置统一持有，
+/// 入参 baseUrl/apiVersion 仅保留签名兼容、实际不使用）；WCS 后端管理接口走 /api/wcs/*。
+/// 本类 base 取 localStorage grcs_wcs_url（地图信息页配置保存）。
 /// </summary>
 public class MockWcsService : IWcsService
 {
     private readonly HttpClient _http;
+    private readonly LocalStoreService _store;
 
-    public MockWcsService(HttpClient http) => _http = http;
+    public MockWcsService(HttpClient http, LocalStoreService store)
+    {
+        _http = http;
+        _store = store;
+    }
 
-    // ── 任务下发 ──
+    /// <summary>WCS 后端地址（grcs_wcs_url，缺省 localhost:8230）。</summary>
+    private string WcsBase
+    {
+        get
+        {
+            var url = _store["grcs_wcs_url"];
+            return string.IsNullOrEmpty(url) || url == "null" ? "http://localhost:8230" : url;
+        }
+    }
 
-    /// <summary>向 GRCS 的 /api/v{version}/task_receive 发送任务组。</summary>
+    private string U(string path) => WcsBase.TrimEnd('/') + path;
+
+    // ── 任务下发（代理 → GRCS /api/v1/task_receive）──
+
     public async Task<(bool Ok, int StatusCode, string Json)> SendTaskGroupAsync(
         string baseUrl, string apiVersion, WcsTaskGroup payload)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/v{apiVersion}/task_receive";
-        return await PostAsync(url, payload);
-    }
+        => await ProxyPostAsync("/api/wcs/grcs/task-receive", payload);
 
-    // ── 车辆任务 ──
+    // ── 车辆任务（代理 → GRCS /api/RawOrder/ChangeFloor）──
 
-    /// <summary>向 GRCS 的 /api/RawOrder/ChangeFloor 发送车辆任务（MOVE_ONLY / CHANGE_FLOOR / CHARGE）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> SendVehicleOrderAsync(
         string baseUrl, VehicleOrderRequest payload)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/RawOrder/ChangeFloor";
-        return await PostAsync(url, payload);
-    }
+        => await ProxyPostAsync("/api/wcs/grcs/change-floor", payload);
 
-    // ── 库存查询 ──
+    // ── 库存查询（代理 → GRCS /api/Cargo）──
 
-    /// <summary>
-    /// 向 GRCS 的 /api/Cargo 查询容器库存（GET，支持 Code / HomeStationScene / IsLocked 过滤 + 分页）。
-    /// GRCS 侧原生支持 pageNo/pageSize 并返回 totalCount，前端分页展示只发前 200 条/页；
-    /// 需要全量数据的业务调用方保持默认 pageSize=2000（与优化前行为一致）。
-    /// </summary>
     public async Task<(bool Ok, int StatusCode, string Json)> QueryCargoInventoryAsync(
         string baseUrl, string? code = null, string? scene = null, string? locked = null,
         int pageNo = 1, int pageSize = 2000)
     {
-        var url = $"{baseUrl.TrimEnd('/')}/api/Cargo?pageNo={pageNo}&pageSize={pageSize}";
-        if (!string.IsNullOrWhiteSpace(code)) url += $"&SearchContextParams[Code]={Uri.EscapeDataString(code)}";
-        if (!string.IsNullOrWhiteSpace(scene)) url += $"&SearchContextParams[HomeStationScene]={Uri.EscapeDataString(scene)}";
-        if (!string.IsNullOrWhiteSpace(locked)) url += $"&SearchContextParams[IsLocked]={locked}";
+        var url = U("/api/wcs/grcs/cargo") + $"?pageNo={pageNo}&pageSize={pageSize}";
+        if (!string.IsNullOrWhiteSpace(code)) url += $"&code={Uri.EscapeDataString(code)}";
+        if (!string.IsNullOrWhiteSpace(locked)) url += $"&locked={Uri.EscapeDataString(locked)}";
         try
         {
             var resp = await _http.GetAsync(url);
             var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
+            return ParseProxy(body);
         }
-        catch (HttpRequestException ex)
-        {
-            return (false, 0, JsonSerializer.Serialize(new { error = ex.Message }));
-        }
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
     }
 
-    /// <summary>向 GRCS 的 /api/Cargo/{id} 发送 DELETE 删除容器库存。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> DeleteCargoAsync(string baseUrl, int id)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/Cargo/{id}";
-        try
-        {
-            var resp = await _http.DeleteAsync(url);
-            var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
-        }
-        catch (HttpRequestException ex)
-        {
-            return (false, 0, JsonSerializer.Serialize(new { error = ex.Message }));
-        }
-    }
-
-    /// <summary>向 GRCS 的 /AutoContainerEnter 发送 GET 自动生成容器入库。</summary>
+    /// <summary>模拟生成容器入库（代理 → GRCS /AutoContainerEnter，场景按后端设置）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> AutoContainerEnterAsync(string baseUrl, string sceneName,
         string prefix = "container", int num = -1, int floor = -1, int type = 1)
     {
-        var url = $"{baseUrl.TrimEnd('/')}/AutoContainerEnter?sceneName={Uri.EscapeDataString(sceneName)}"
-            + $"&prefix={Uri.EscapeDataString(prefix)}&num={num}&floor={floor}&type={type}";
+        var url = U("/api/wcs/grcs/auto-container-enter")
+            + $"?prefix={Uri.EscapeDataString(prefix)}&num={num}&floor={floor}&type={type}";
         try
         {
             var resp = await _http.GetAsync(url);
             var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
+            return ParseProxy(body);
         }
-        catch (HttpRequestException ex)
-        {
-            return (false, 0, JsonSerializer.Serialize(new { error = ex.Message }));
-        }
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
     }
 
-    // ── 分拣信号（WCS → GRCS 出站信号）──
+    // ── 分拣/到达/移除信号（代理 → GRCS /api/v1/*）──
 
-    /// <summary>向 GRCS 的 /api/v{version}/container_operation_finish 发送分拣完成通知。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> SendOperationFinishAsync(
         string baseUrl, string apiVersion, WcsOperationFinishRequest payload)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/v{apiVersion}/container_operation_finish";
-        return await PostAsync(url, payload);
-    }
+        => await ProxyPostAsync("/api/wcs/grcs/operation-finish", payload);
 
-    /// <summary>向 GRCS 的 /api/v{version}/container_ready 发送货物到达通知（入库容器到达输送线末端）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> SendContainerReadyAsync(
         string baseUrl, string apiVersion, WcsContainerReadyRequest payload)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/v{apiVersion}/container_ready";
-        return await PostAsync(url, payload);
-    }
+        => await ProxyPostAsync("/api/wcs/grcs/container-ready", payload);
 
-    /// <summary>向 GRCS 的 /api/v{version}/container_remove 发送货物移除通知（出库容器离开输送线末端）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> SendContainerRemoveAsync(
         string baseUrl, string apiVersion, WcsContainerRemoveRequest payload)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/v{apiVersion}/container_remove";
-        return await PostAsync(url, payload);
-    }
+        => await ProxyPostAsync("/api/wcs/grcs/container-remove", payload);
 
     // ── 任务阶段（WCS 后端管理接口 /api/wcs）──
 
-    /// <summary>
-    /// 查询任务阶段变化事件列表（GET /api/wcs/task-stages）。
-    /// sinceId &gt; 0 时只返回 Id 更大的增量事件（WCS 后端 GetEventsSince，Id 为后端内存自增、单调不回绕），
-    /// 供 TaskStageHub 增量合并；不带 sinceId 时后端返回最近 200 条（全量首拉/周期对账用）。
-    /// </summary>
     public async Task<(bool Ok, int StatusCode, string Json)> GetTaskStageEventsAsync(string baseUrl, long sinceId = 0)
     {
-        var url = $"{baseUrl.TrimEnd('/')}/api/wcs/task-stages";
+        var url = U("/api/wcs/task-stages");
         if (sinceId > 0) url += $"?sinceId={sinceId}";
-        try
-        {
-            var resp = await _http.GetAsync(url);
-            var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
-        }
-        catch (HttpRequestException ex)
-        {
-            return (false, 0, JsonSerializer.Serialize(new { error = ex.Message }));
-        }
+        return await GetRawAsync(url);
     }
 
-    /// <summary>判断指定任务是否已到达某个阶段。</summary>
+    public async Task<(bool Ok, int StatusCode, string Json)> DeleteTaskStageAsync(string baseUrl, string taskId)
+        => await DeleteRawAsync("/api/wcs/task-stages/" + Uri.EscapeDataString(taskId));
+
     public async Task<bool> HasTaskReachedStageAsync(string baseUrl, string taskId, string stage)
     {
         var (ok, _, json) = await GetTaskStageEventsAsync(baseUrl);
         if (!ok) return false;
         try
         {
-            var events = System.Text.Json.JsonSerializer.Deserialize<List<GRCS.Dashboard.Modules.WcsSimulator.Models.StageChangeEvent>>(json,
-                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            var events = JsonSerializer.Deserialize<List<StageChangeEvent>>(json,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             return events?.Any(e => e.TaskId == taskId && e.Stage == stage) ?? false;
         }
         catch { return false; }
     }
 
-    /// <summary>删除指定任务的所有阶段事件（DELETE /api/wcs/task-stages/{taskId}）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> DeleteTaskStageAsync(string baseUrl, string taskId)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/wcs/task-stages/{Uri.EscapeDataString(taskId)}";
-        try
-        {
-            var resp = await _http.DeleteAsync(url);
-            var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
-        }
-        catch (HttpRequestException ex)
-        {
-            return (false, 0, JsonSerializer.Serialize(new { error = ex.Message }));
-        }
-    }
-
     // ── 接驳位审批（WCS 后端管理接口 /api/wcs）──
 
-    /// <summary>查询准入状态：自动模式 + 待确认数（GET /api/wcs/status）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> GetAdmittanceStatusAsync(string baseUrl)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/wcs/status";
-        try
-        {
-            var resp = await _http.GetAsync(url);
-            var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
-        }
-        catch (HttpRequestException ex)
-        {
-            return (false, 0, JsonSerializer.Serialize(new { error = ex.Message }));
-        }
-    }
-
-    /// <summary>查询进入申请事件列表（GET /api/wcs/events）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> GetAdmittanceEventsAsync(string baseUrl)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/wcs/events";
-        try
-        {
-            var resp = await _http.GetAsync(url);
-            var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
-        }
-        catch (HttpRequestException ex)
-        {
-            return (false, 0, JsonSerializer.Serialize(new { error = ex.Message }));
-        }
-    }
-
-    /// <summary>批准/拒绝进入申请（POST /api/wcs/decisions/{key}）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> DecideEntryAsync(string baseUrl, string key, bool allow)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/wcs/decisions/{Uri.EscapeDataString(key)}";
-        return await PostAsync(url, new { allow });
-    }
+        => await PostRawAsync("/api/wcs/decisions/" + Uri.EscapeDataString(key), new { allow });
 
-    /// <summary>删除进入申请事件（DELETE /api/wcs/events/{key}）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> DeleteEntryEventAsync(string baseUrl, string key)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/wcs/events/{Uri.EscapeDataString(key)}";
-        return await DeleteAsync(url);
-    }
+        => await DeleteRawAsync("/api/wcs/events/" + Uri.EscapeDataString(key));
 
-    /// <summary>清空全部进入申请事件（DELETE /api/wcs/events）。</summary>
     public async Task<(bool Ok, int StatusCode, string Json)> ClearEntryEventsAsync(string baseUrl)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/wcs/events";
-        return await DeleteAsync(url);
-    }
-
-    /// <summary>切换准入模式：auto=true 全自动放行，false 手动确认（POST /api/wcs/mode）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> SetAdmittanceModeAsync(string baseUrl, bool auto)
-    {
-        var url = $"{baseUrl.TrimEnd('/')}/api/wcs/mode";
-        return await PostAsync(url, new { auto });
-    }
+        => await DeleteRawAsync("/api/wcs/events");
 
     // ── 通用方法 ──
 
-    private async Task<(bool Ok, int StatusCode, string Json)> DeleteAsync(string url)
+    /// <summary>调 GRCS 代理：后端返回 { ok, code, json }，解析为调用方 (Ok, StatusCode, Json)。</summary>
+    private async Task<(bool Ok, int StatusCode, string Json)> ProxyPostAsync<T>(string path, T payload)
     {
         try
         {
-            var resp = await _http.DeleteAsync(url);
+            var resp = await _http.PostAsJsonAsync(U(path), payload);
             var body = await resp.Content.ReadAsStringAsync();
-            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
+            return ParseProxy(body);
         }
-        catch (HttpRequestException ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
     }
 
-    private async Task<(bool Ok, int StatusCode, string Json)> PostAsync<T>(string url, T payload)
+    private static (bool Ok, int StatusCode, string Json) ParseProxy(string json)
     {
         try
         {
-            var resp = await _http.PostAsJsonAsync(url, payload);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            bool ok = root.TryGetProperty("ok", out var okEl) && okEl.ValueKind == JsonValueKind.True;
+            int code = root.TryGetProperty("code", out var cEl) && cEl.ValueKind == JsonValueKind.Number ? cEl.GetInt32() : 0;
+            string inner = root.TryGetProperty("json", out var jEl) ? jEl.GetString() ?? json : json;
+            return (ok, code, inner);
+        }
+        catch { return (false, 0, json); }
+    }
+
+    private async Task<(bool Ok, int StatusCode, string Json)> GetRawAsync(string path)
+    {
+        try
+        {
+            var resp = await _http.GetAsync(U(path));
             var body = await resp.Content.ReadAsStringAsync();
             return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
         }
-        catch (HttpRequestException ex)
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+    }
+
+    private async Task<(bool Ok, int StatusCode, string Json)> PostRawAsync<T>(string path, T payload)
+    {
+        try
         {
-            return (false, 0, JsonSerializer.Serialize(new { error = ex.Message }));
+            var resp = await _http.PostAsJsonAsync(U(path), payload);
+            var body = await resp.Content.ReadAsStringAsync();
+            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
         }
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
+    }
+
+    private async Task<(bool Ok, int StatusCode, string Json)> DeleteRawAsync(string path)
+    {
+        try
+        {
+            var resp = await _http.DeleteAsync(U(path));
+            var body = await resp.Content.ReadAsStringAsync();
+            return (resp.IsSuccessStatusCode, (int)resp.StatusCode, body);
+        }
+        catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
     }
 }

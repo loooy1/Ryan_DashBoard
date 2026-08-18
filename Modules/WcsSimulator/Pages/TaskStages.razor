@@ -9,35 +9,10 @@
 <PageTitle>任务看板</PageTitle>
 
 @* ════════════════════════════════════════════════
-   连接设置：WCS 后端管理接口地址
+   提示：WCS 后端地址在「地图信息」页系统设置配置
    ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
-        🔌 连接设置
-        <span class="addr-badge">WCS 后端 @_baseUrl</span>
-        <span class="collapse-arrow">@(IsCollapsed("ts_conn") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("ts_conn"))
-    {
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
-            <label>WCS 后端地址</label>
-            <input type="text" @bind="_baseUrl" placeholder="http://localhost:8230">
-        </div>
-        <div class="form-group" style="width:100px;flex-shrink:0;">
-            <label>轮询间隔</label>
-            <input type="number" min="1" max="60" @bind="_pollSeconds">
-        </div>
-        <div class="form-group" style="width:110px;flex-shrink:0;">
-            <label>显示数量</label>
-            <select @bind="_maxTasks">
-                <option value="10">10</option>
-                <option value="20">20</option>
-                <option value="50">50</option>
-            </select>
-        </div>
-    </div>
-    }
+<div class="hint-text" style="margin:0 0 12px;">
+    WCS 后端地址在「地图信息」页系统设置配置，本页自动读取。
 </div>
 
 @* ════════════════════════════════════════════════
@@ -67,7 +42,7 @@
     @if (!_pollingOk)
     {
         <div class="hint-text" style="color:#f87171;margin:8px 0;">
-            ⚠ 无法连接 WCS 后端 @_baseUrl，请确认 GrcsBackend 已启动。@_lastError
+            ⚠ 无法连接 WCS 后端，请确认 GrcsBackend 已启动。@_lastError
         </div>
     }
     @if (_groups.Count == 0)
@@ -132,7 +107,6 @@
     };
 
     // ── 表单字段 ──
-    private string _baseUrl = "http://localhost:8230";     // WCS 后端管理接口地址
     private int _pollSeconds = 3;                          // 轮询间隔
     private int _maxTasks = 10;                            // 显示任务数
     private bool _busy;                                    // 操作中标志
@@ -145,7 +119,7 @@
     private System.Threading.Timer? _timer;                // 轮询定时器
 
     // ── 卡片折叠状态（持久化，默认全部折叠避免初始化闪烁）──
-    private Dictionary<string, bool> _collapsed = new() { ["ts_conn"] = true, ["ts_list"] = true };
+    private Dictionary<string, bool> _collapsed = new() { ["ts_list"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
     {
@@ -155,7 +129,6 @@
         // 展开时立即加载数据
         if (wasCollapsed && key == "ts_list") await LoadEvents();
     }
-    private Task ToggleConn() => Toggle("ts_conn");
     private Task ToggleList() => Toggle("ts_list");
 
     protected override async Task OnInitializedAsync()
@@ -165,7 +138,6 @@
         {
             string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
             if (V("grcs_ts_collapsed") is string cjson) _collapsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
-            if (V("grcs_wcs_url") is string wcs) _baseUrl = wcs;
             if (V("grcs_ts_deleted") is string delJson) _deletedTaskIds = System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(delJson) ?? [];
             if (V("grcs_ts_events") is string cachedJson) { var cachedEvents = System.Text.Json.JsonSerializer.Deserialize<List<StageChangeEvent>>(cachedJson, _jsonOpts) ?? []; if (cachedEvents.Count > 0) BuildGroups(cachedEvents); }
         }
@@ -268,7 +240,7 @@
     {
         _busy = true;
         // 1. 调用后端删除接口
-        var (ok, code, _) = await WcsService.DeleteTaskStageAsync(_baseUrl, taskId);
+            var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
         if (!ok && code != 404)
         {
             _lastError = $"删除失败 HTTP {code}";
@@ -293,7 +265,7 @@
         var taskIds = _groups.Keys.ToList();
         foreach (var taskId in taskIds)
         {
-            var (ok, code, _) = await WcsService.DeleteTaskStageAsync(_baseUrl, taskId);
+        var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
             if (!ok && code != 404)
             {
                 _lastError = $"删除 {taskId} 失败 HTTP {code}";

@@ -32,17 +32,15 @@ builder.Services.AddScoped<ModuleNavigationService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.IWcsService,
                            GRCS.Dashboard.Modules.WcsSimulator.Services.MockWcsService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.WcsFlowStateService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.CargoCodeService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.StationLockService>();
-builder.Services.AddSingleton<GRCS.Dashboard.Modules.WcsSimulator.Services.EventAggregator>();
-// SignalAutoService 依赖 LocalStoreService / TaskLedgerService / MockWcsService 等 Scoped 服务，
-// 注册为 Singleton 会触发 ScopedInSingletonException（net8+ 开发环境 ValidateOnBuild）。
-// WASM 中 Scoped 本身就是每个标签页一个实例（跨页面导航存活），行为与 Singleton 等价。
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.SignalAutoService>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.LocalStoreService>();
+// Skill E：后端遥控壳（WcsApiClient + 共享状态/日志轮询中枢 + 三个瘦壳服务）
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.WcsApiClient>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.AutomationHub>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.AutoRunService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.ContainerTaskService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.LocalStoreService>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.SignalAutoService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskLedgerService>();
+builder.Services.AddSingleton<GRCS.Dashboard.Modules.WcsSimulator.Services.EventAggregator>();
 // 任务阶段事件共享轮询器：全应用唯一轮询 task-stages，替代各处各自轮询
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskStageHub>();
 

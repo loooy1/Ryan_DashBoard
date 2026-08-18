@@ -21,41 +21,10 @@
 <PageTitle>WCS 任务下发</PageTitle>
 
 @* ════════════════════════════════════════════════
-   连接设置：配置 GRCS 后端地址和场景名
-   ── 说明 ── 地址与场景名从共享 localStorage 键（grcs_grcs_url /
-   grcs_warehouse）恢复；输入框失焦时把整个表单快照写入 grcs_td_state
-   ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
-        🔌 连接设置
-        <span class="addr-badge">GRCS @_baseUrl</span>
-        <span class="collapse-arrow">@(IsCollapsed("td_conn") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("td_conn"))
-    {
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
-            <label>服务器地址</label>
-            <input type="text" @bind="_baseUrl" @onblur="SaveFormState" placeholder="http://localhost:8224">
-        </div>
-        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
-            <label>场景名称</label>
-            <input type="text" @bind="_warehouse" @onblur="SaveFormState" placeholder="Show">
-        </div>
-        <div class="form-group" style="width:80px;flex-shrink:0;">
-            <label>API 版本</label>
-            <select @bind="_apiVersion">
-                <option value="1.0">v1.0</option>
-            </select>
-        </div>
-    </div>
-    }
-</div>
-
-@* ════════════════════════════════════════════════
    任务组配置：组ID、时间、优先级
    ── 说明 ── 对应 GRCS 任务组报文 ZkWcsTaskGroupInfo：一次下发
-   包含一个组 ID + 一批任务项；组 ID 自动生成（GRP_ 前缀）
+   包含一个组 ID + 一批任务项；组 ID 自动生成（GRP_ 前缀）。
+   GRCS 地址/场景名在「地图信息」页系统设置配置，本页无需连接设置。
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleGroup" title="点击折叠/展开">
@@ -297,9 +266,7 @@
 
 @code {
     // ── 表单字段 ──
-    private string _baseUrl = "http://localhost:8224";   // GRCS 服务器地址
-    private string _warehouse = "";                        // 场景名称
-    private string _apiVersion = "1.0";                    // API 版本
+    private string _warehouse = "Show";                        // 场景名称（以后端系统设置为准，这里仅作报文默认值）
     private string _groupId = "";                          // 任务组 ID（自动生成）
     private string _msgTime = "";                          // 下发时间
     private int _priority;                                  // 优先级 0-1000
@@ -472,7 +439,7 @@
     }
 
     // ── 卡片折叠状态（持久化到 localStorage 键 grcs_td_collapsed，切走再回来保持）──
-    private Dictionary<string, bool> _collapsed = new() { ["td_conn"] = true, ["td_group"] = true, ["td_type"] = true, ["td_tasks"] = true, ["td_resp"] = true };
+    private Dictionary<string, bool> _collapsed = new() { ["td_group"] = true, ["td_type"] = true, ["td_tasks"] = true, ["td_resp"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
     {
@@ -482,7 +449,6 @@
         // 展开编辑任务区时，如果容器列表还没加载过，补拉一次
         if (wasCollapsed && key == "td_tasks" && _containerCodes.Count == 0) await LoadContainerCodes();
     }
-    private Task ToggleConn() => Toggle("td_conn");
     private Task ToggleGroup() => Toggle("td_group");
     private Task ToggleType() => Toggle("td_type");
     private Task ToggleTasks() => Toggle("td_tasks");
@@ -500,9 +466,7 @@
     /// <summary>表单快照：序列化到 localStorage 键 grcs_td_state，每次编辑失焦即写回，刷新页面后整表恢复。</summary>
     private class FormState
     {
-        public string BaseUrl { get; set; } = "";
         public string Warehouse { get; set; } = "";
-        public string ApiVersion { get; set; } = "";
         public string GroupId { get; set; } = "";
         public string MsgTime { get; set; } = "";
         public int Priority { get; set; }
@@ -528,16 +492,13 @@
             string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
 
             if (V("grcs_warehouse") is string wh) _warehouse = wh;
-            if (V("grcs_grcs_url") is string grcs) _baseUrl = grcs;
 
             if (V("grcs_td_state") is string stateJson)
             {
                 var state = System.Text.Json.JsonSerializer.Deserialize<FormState>(stateJson);
                 if (state != null)
                 {
-                    if (!string.IsNullOrEmpty(state.BaseUrl)) _baseUrl = state.BaseUrl;
                     if (!string.IsNullOrEmpty(state.Warehouse)) _warehouse = state.Warehouse;
-                    if (!string.IsNullOrEmpty(state.ApiVersion)) _apiVersion = state.ApiVersion;
                     _groupId = !string.IsNullOrEmpty(state.GroupId) ? state.GroupId : "GRP_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
                     _msgTime = !string.IsNullOrEmpty(state.MsgTime) ? state.MsgTime : DateTime.Now.ToString("yyyy-MM-ddTHH:mm");
                     _priority = state.Priority;
@@ -579,7 +540,7 @@
         _invLastQuery = DateTime.Now;
         try
         {
-            var (ok, _, json) = await WcsService.QueryCargoInventoryAsync(_baseUrl);
+            var (ok, _, json) = await WcsService.QueryCargoInventoryAsync("");
             if (ok)
             {
                 var result = System.Text.Json.JsonSerializer.Deserialize<CargoQueryResult>(json,
@@ -621,9 +582,7 @@
         {
             var state = new FormState
             {
-                BaseUrl = _baseUrl,
                 Warehouse = _warehouse,
-                ApiVersion = _apiVersion,
                 GroupId = _groupId,
                 MsgTime = _msgTime,
                 Priority = _priority,
@@ -856,7 +815,7 @@
         _sending = true;
         StateHasChanged();
 
-        var (ok, code, json) = await WcsService.SendTaskGroupAsync(_baseUrl, _apiVersion, payload);
+        var (ok, code, json) = await WcsService.SendTaskGroupAsync("", "1.0", payload);
         ShowResp((ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}", ok ? "success" : "error");
 
         // ── 保存到台账（唯一数据源，取代下发历史）。

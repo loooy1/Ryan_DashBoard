@@ -1,83 +1,56 @@
-using System.Text.Json;
 using GRCS.Dashboard.Modules.WcsSimulator.Models;
-using Microsoft.JSInterop;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
-/// 任务台账内存缓存（scoped = per-browser-tab singleton）。
-///
-/// ── 数据流 ──
-/// 台账 grcs_task_ledger 是任务下发记录的唯一数据源（取代旧的 grcs_wcs_history），
-/// 体积大（上限 2000 条），不适合放进 LocalStoreService 预加载。本服务首读时从
-/// localStorage 拉一次并缓存，之后所有读都是内存操作（0 次 JS 边界 + 0 次 JSON 反序列化）；
-/// 本标签页所有写入走 AppendAsync 同步更新缓存并写穿 localStorage
-/// （JS 端 grcsSaveHistory 负责旧 history 迁移与 2000 上限合并）。
-///
-/// ── 跨标签页可见性 ──
-/// JS 端维护 __ledgerVersion 版本号：其他标签页写入台账时（storage 事件）版本 +1，
-/// GetAsync 每次用一次轻量 JS interop 读版本号，发现变化才重读全量台账——
-/// 避免信号轮询、页面刷新每次全量加载。
+/// 任务台账遥控壳（Skill E：数据源已下沉到 GrcsBackend LedgerStore + SQLite）。
+/// GetAsync 读后端（2s 缓存收敛）；AppendAsync 转 POST（后端写入，手动任务/自动任务同一份）；
+/// ClearAsync 转 DELETE。换浏览器/清缓存数据仍在。
 /// </summary>
 public class TaskLedgerService
 {
     private const int Limit = 2000;
-    private readonly IJSRuntime _js;
+    private readonly WcsApiClient _api;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private static readonly JsonSerializerOptions Opts = new() { PropertyNameCaseInsensitive = true };
     private List<TaskLedgerEntry>? _cache;
-    private int _lastVersion = -1;
-    private bool _versionSupported = true;
+    private DateTime _lastFetch = DateTime.MinValue;
 
-    public TaskLedgerService(IJSRuntime js) => _js = js;
+    public TaskLedgerService(WcsApiClient api) => _api = api;
 
-    /// <summary>读台账（内存缓存；首次从 localStorage 拉取，旧 history 由 JS 端顺带迁移）。
-    /// 其他标签页写入台账时 JS 端版本号 +1，此处发现版本变化即重读，保证跨标签页可见。</summary>
     public async Task<List<TaskLedgerEntry>> GetAsync()
     {
-        int version = -1;
-        if (_versionSupported)
-        {
-            try { version = await _js.InvokeAsync<int>("grcsLedgerVersion"); }
-            catch { _versionSupported = false; } // 旧 index.html 无此函数：退化为每次直读 localStorage
-        }
-        if (_versionSupported && _cache != null && version == _lastVersion) return _cache;
-        var list = new List<TaskLedgerEntry>();
+        await _gate.WaitAsync();
         try
         {
-            var json = await _js.InvokeAsync<string>("grcsLoadTaskLedgerMigrated");
-            if (!string.IsNullOrEmpty(json) && json != "null")
-                list = JsonSerializer.Deserialize<List<TaskLedgerEntry>>(json, Opts) ?? [];
+            if (_cache != null && DateTime.UtcNow - _lastFetch < TimeSpan.FromSeconds(2)) return _cache;
+            var list = await _api.GetAsync<List<TaskLedgerEntry>>($"/api/wcs/ledger?limit={Limit}") ?? [];
+            _cache = list;
+            _lastFetch = DateTime.UtcNow;
+            return _cache;
         }
-        catch { }
-        _cache = list;
-        _lastVersion = version;
-        return _cache;
+        finally { _gate.Release(); }
     }
 
-    /// <summary>追加条目（新条目在前，与 JS 端合并顺序一致），写穿 localStorage。</summary>
+    /// <summary>追加条目（后端 SQLite 持久化，前端缓存失效下轮重读）。</summary>
     public async Task AppendAsync(List<TaskLedgerEntry> entries)
     {
         if (entries.Count == 0) return;
         await _gate.WaitAsync();
         try
         {
-            var cur = await GetAsync();
-            _cache = entries.Concat(cur).Take(Limit).ToList();
-            try { await _js.InvokeVoidAsync("grcsSaveHistory", JsonSerializer.Serialize(entries)); }
-            catch { _cache = null; } // 写失败：缓存失效，下读重新同步 localStorage
+            await _api.PostAsync("/api/wcs/ledger", entries);
+            _cache = null;
         }
         finally { _gate.Release(); }
     }
 
-    /// <summary>清空台账（内存 + localStorage）。</summary>
     public async Task ClearAsync()
     {
         await _gate.WaitAsync();
         try
         {
+            await _api.DeleteAsync("/api/wcs/ledger");
             _cache = [];
-            try { await _js.InvokeVoidAsync("grcsClearHistory"); } catch { }
         }
         finally { _gate.Release(); }
     }

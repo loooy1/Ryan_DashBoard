@@ -102,7 +102,7 @@
         // 任意 key 被其他标签页修改时，发布对应事件，供 Blazor 层订阅
         const GRCS_STORAGE_EVENTS = [
             'grcs_arrival_confirmed', 'grcs_removal_confirmed', 'grcs_ss_sent',
-            'grcs_arrival_auto', 'grcs_removal_auto', 'grcs_ss_auto',
+            'grcs_ss_auto',
             'grcs_signal_auto_leader'
         ];
         window.__grcsStorageEvents = {};
@@ -133,8 +133,6 @@
             window.__grcsRegisterStorageListener('grcs_arrival_confirmed', () => dispatch('grcs_arrival_confirmed'));
             window.__grcsRegisterStorageListener('grcs_removal_confirmed', () => dispatch('grcs_removal_confirmed'));
             window.__grcsRegisterStorageListener('grcs_ss_sent', () => dispatch('grcs_ss_sent'));
-            window.__grcsRegisterStorageListener('grcs_arrival_auto', () => dispatch('grcs_arrival_auto'));
-            window.__grcsRegisterStorageListener('grcs_removal_auto', () => dispatch('grcs_removal_auto'));
             window.__grcsRegisterStorageListener('grcs_ss_auto', () => dispatch('grcs_ss_auto'));
         };
 

@@ -1,0 +1,134 @@
+using GRCS.Dashboard.Modules.WcsSimulator.Models;
+
+namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+
+/// <summary>
+/// 自动化状态/日志共享轮询中枢（Skill E：数据源在后端 GrcsBackend）。
+/// 每 1 秒拉一次 /api/wcs/auto/status 快照 + /api/wcs/auto/logs?sinceId 增量日志，
+/// 以及进入申请 /api/wcs/status + /api/wcs/events（信号交互页进入信号多标签页同步）。
+/// AutoRunService / ContainerTaskService / SignalAutoService 三个瘦壳共享同一份数据与 Changed 事件。
+/// </summary>
+public class AutomationHub : IDisposable
+{
+    private const int MaxLogs = 500;
+    private readonly WcsApiClient _api;
+    private readonly CancellationTokenSource _cts = new();
+    private readonly Task _loop;
+    private long _logWatermark;
+    private readonly object _lock = new();
+
+    public AutoStatusSnapshot Status { get; private set; } = new();
+    public List<AutoLogEntry> Logs { get; } = [];
+    public bool IsOnline { get; private set; } = true;
+    /// <summary>选点范围配置快照（随轮询刷新；AutomationTasks 页跨标签页同步用）。</summary>
+    public RangeConfigDto Range { get; private set; } = new();
+
+    // ── 进入申请（信号交互页「进入信号」多标签页同步）──
+    public int PendingCount { get; private set; }
+    public bool AdmittanceAutoMode { get; private set; }
+    public bool AdmittanceOnline { get; private set; } = true;
+    public List<EntryRequestEvent> EntryEvents { get; } = [];
+
+    public event Action? Changed;
+
+    public AutomationHub(WcsApiClient api)
+    {
+        _api = api;
+        _loop = LoopAsync(_cts.Token);
+    }
+
+    private async Task LoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try { await PollAsync(); }
+            catch { IsOnline = false; }
+            try { await Task.Delay(1000, ct); } catch { return; }
+        }
+    }
+
+    /// <summary>立即拉一轮（手动操作后调用，避免等下一拍）。</summary>
+    public async Task RefreshNowAsync()
+    {
+        try { await PollAsync(); }
+        catch { IsOnline = false; }
+    }
+
+    /// <summary>乐观更新：POST 启停成功后立即反映到快照，不等下一轮轮询（其余字段仍由轮询覆盖）。</summary>
+    public void ApplyRunning(bool running)
+    {
+        Status.Running = running;
+        Changed?.Invoke();
+    }
+
+    /// <summary>乐观更新：信号自动开关（到达/移除/分拣）POST 后立即反映到快照，不等下一轮轮询。</summary>
+    public void ApplySignals(bool arrival, bool removal, bool sorting)
+    {
+        Status.Signals.ArrivalAuto = arrival;
+        Status.Signals.RemovalAuto = removal;
+        Status.Signals.AutoSend = sorting;
+        Changed?.Invoke();
+    }
+
+    /// <summary>乐观更新：进入申请自动/手动模式 POST 后立即反映到快照，不等下一轮轮询。</summary>
+    public void ApplyAdmittanceMode(bool mode)
+    {
+        AdmittanceAutoMode = mode;
+        Changed?.Invoke();
+    }
+
+    private async Task PollAsync()
+    {
+        var st = await _api.GetAsync<AutoStatusSnapshot>("/api/wcs/auto/status");
+        if (st != null) { Status = st; IsOnline = true; }
+        else IsOnline = false;
+
+        // 选点范围（自动化任务页「开启/关闭限制」等跨标签页同步）
+        var range = await _api.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
+        if (range != null) Range = range;
+
+        // 进入申请（信号交互页徽章 + 事件表）
+        var adm = await _api.GetAsync<AdmittanceStatusDto>("/api/wcs/status");
+        if (adm != null) { PendingCount = adm.PendingCount; AdmittanceAutoMode = adm.AutoMode; AdmittanceOnline = true; }
+        else AdmittanceOnline = false;
+        var evts = await _api.GetAsync<List<EntryRequestEvent>>("/api/wcs/events");
+        if (evts != null)
+        {
+            lock (_lock)
+            {
+                EntryEvents.Clear();
+                EntryEvents.AddRange(evts);
+            }
+        }
+
+        // 增量日志；后端重启（Id 回绕）时整表替换
+        var resp = await _api.GetAsync<LogsResponse>("/api/wcs/auto/logs?sinceId=" + _logWatermark);
+        if (resp != null)
+        {
+            if (resp.MaxId < _logWatermark)
+            {
+                _logWatermark = 0;
+                resp = await _api.GetAsync<LogsResponse>("/api/wcs/auto/logs?sinceId=0");
+            }
+            if (resp?.Entries is { Count: > 0 })
+            {
+                lock (_lock)
+                {
+                    foreach (var e in resp.Entries)
+                        Logs.Add(new AutoLogEntry { Time = e.Time, Message = e.Message, Color = e.Color });
+                    if (Logs.Count > MaxLogs) Logs.RemoveRange(0, Logs.Count - MaxLogs);
+                }
+            }
+            _logWatermark = Math.Max(_logWatermark, resp?.MaxId ?? 0);
+        }
+        Changed?.Invoke();
+    }
+
+    public void ClearLogs()
+    {
+        lock (_lock) { Logs.Clear(); }
+        _ = _api.DeleteAsync("/api/wcs/auto/logs");
+    }
+
+    public void Dispose() => _cts.Cancel();
+}

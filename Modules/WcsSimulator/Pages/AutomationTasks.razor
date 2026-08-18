@@ -1,9 +1,8 @@
 @page "/wcs-simulator/automation"
-@inject IWcsService WcsService
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
-@inject CargoCodeService CargoCodes
-@inject StationLockService StationLocks
+@inject WcsApiClient WcsApi
+@inject AutomationHub Hub
 @inject AutoRunService Auto
 @inject ContainerTaskService Container
 @implements IDisposable
@@ -13,47 +12,31 @@
 @* ════════════════════════════════════════════════
    页面职责：WCS 模拟器的「自动化任务」页，三个独立功能区块
    ① 批量移动任务下发：从地图缓存按来源（手输 / 类型+楼层）筛选候选池，
-      随机生成一批 MOVE_ONLY 任务并逐条 POST 到 GRCS /api/RawOrder/ChangeFloor
+      随机生成一批 MOVE_ONLY 任务并逐条经 WCS 后端 /api/wcs/auto/move/dispatch
+      转投 GRCS /api/RawOrder/ChangeFloor（前端不再直连 GRCS）
    ② 自动容器任务下发：执行状态托管到单例服务 ContainerTaskService，
       两段式任务编排在服务内部完成，切换模块不中断
    ③ 自动化轮询储位：运行状态托管到单例服务 AutoRunService，
       页面仅订阅 Changed 事件刷新，日志与计数跨导航存活
    ── 交互服务 ──
-   IWcsService：向 GRCS 下发车辆任务（ChangeFloor）
+   WcsApiClient：GrcsBackend 管理面 API（含移动任务下发中转）
    ContainerTaskService / AutoRunService：跨页面存活的后台执行服务
    LocalStoreService：配置与折叠状态持久化到浏览器 localStorage
    ════════════════════════════════════════════════ *@
 <PageTitle>自动化任务</PageTitle>
 
 @* ════════════════════════════════════════════════
-   连接设置：GRCS 地址与场景名称在页面初始化时从共享 localStorage 键
-   （grcs_grcs_url / grcs_warehouse）恢复，修改后随表单绑定立即生效
+   提示：GRCS 地址/场景名在「地图信息」页系统设置配置（后端单一数据源），
+   本页自动读取（Hub.Status.Settings），无需连接设置
    ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
-        🔌 连接设置
-        <span class="addr-badge">GRCS @_baseUrl</span>
-        <span class="collapse-arrow">@(IsCollapsed("conn") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("conn"))
-    {
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
-            <label>GRCS 地址</label>
-            <input type="text" @bind="_baseUrl" placeholder="http://localhost:8224">
-        </div>
-        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
-            <label>场景名称</label>
-            <input type="text" @bind="_sceneName" placeholder="Show">
-        </div>
-    </div>
-    }
+<div class="hint-text" style="margin:0 0 12px;">
+    GRCS 地址与场景名在「地图信息」页系统设置配置，本页自动读取；自动化任务由后端执行。
 </div>
 
 @* ════════════════════════════════════════════════
-   选点范围：限制自动化任务（轮询储位 + 自动容器）的选点范围。
-   配置持久化到 localStorage（grcs_auto_range），两个服务加载时按此过滤候选池。
-   支持 站点类型 + 楼层 + 手动 Mark 白名单（三者 AND）。
+    选点范围：限制自动化任务（轮询储位 + 自动容器）的选点范围。
+    配置持久化到后端（/api/wcs/auto/range），两个服务加载时按此过滤候选池。
+    支持 站点类型 + 楼层 + 手动 Mark 白名单（三者 AND）。
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleRange" title="点击折叠/展开">
@@ -139,6 +122,11 @@
         <div class="range-banner">🎯 范围选点已开启，仅在限制范围内自动化下发任务（候选 @_rangePool.Count 个站点：储位 @_rangeStorages.Count / 接驳位 @_rangeTransferPoints.Count / 分拣台 @_rangePickingStations.Count）</div>
     }
 
+    @if (OtherTabActive)
+    {
+        <div class="range-warning">⚠ 另一标签页正在下发任务（@OtherTabDesc），本页已禁止下发操作，避免并发撞车。</div>
+    }
+
     @* 模式切换：轮询自动化 / 批量任务 / 纯移动任务 *@
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
         <button class="chip-btn @(_autoMode == "poll" ? "on" : "")" @onclick='() => _autoMode = "poll"'>🔄 轮询自动化</button>
@@ -178,7 +166,7 @@
         }
 
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
-            <button class="btn @(Auto.Running ? "btn-danger" : "btn-primary")" @onclick="ToggleAuto" disabled="@Container.Busy">
+            <button class="btn @(Auto.Running ? "btn-danger" : "btn-primary")" @onclick="ToggleAuto" disabled="@(!Auto.Running && (Container.Busy || OtherTabActive))">
                 @(Auto.Running ? "⏹ 停止" : "▶ 启动")
             </button>
             <button class="btn btn-outline btn-sm" @onclick="ClearAutoLogs" disabled="@Auto.Running">🧹 清空日志</button>
@@ -224,7 +212,7 @@
 
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
             <button class="btn btn-outline btn-sm" @onclick="RefreshContainerInventory" disabled="@Container.Busy">📋 查询库存</button>
-            <button class="btn btn-primary" @onclick="ExecuteContainerAuto" disabled="@(Container.Busy || Auto.Running)">
+            <button class="btn btn-primary" @onclick="ExecuteContainerAuto" disabled="@(Container.Busy || Auto.Running || OtherTabActive)">
                 @(Container.Busy ? $"⏳ 执行中 {Container.Done}/{Container.Total} ..." : "🚀 执行")
             </button>
             @if (Auto.Running)
@@ -262,7 +250,7 @@
         </div>
 
         <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;">
-            <button class="btn @(_moveRunning ? "btn-danger" : "btn-primary")" @onclick="ToggleMoveDispatch">
+            <button class="btn @(_moveRunning ? "btn-danger" : "btn-primary")" @onclick="ToggleMoveDispatch" disabled="@(!_moveRunning && (Auto.Running || Container.Busy || OtherTabActive))">
                 @(_moveRunning ? "⏹ 停止自动下发" : "▶ 开始自动下发")
             </button>
             <span class="hint-text" style="margin:0;">每 @_batchInterval 秒在选点范围内随机抽 1 个站点下发 MOVE_ONLY 任务（自动分配车辆），点击停止结束</span>
@@ -340,10 +328,8 @@
 }
 
 @code {
-    // ── 连接设置 ──
-    private string _baseUrl = "http://localhost:8224";    // GRCS 地址（车辆任务下发目标）
-    private string _wcsBaseUrl = "http://localhost:8230"; // WCS 后端：task-stages 阶段事件源（与信号交互页一致）
-    private string _sceneName = "";                       // 场景名称（共享键 grcs_warehouse）
+    // ── 场景名（后端系统设置，Hub 1s 轮询同步；移动任务报文用）──
+    private string SceneName => Hub.Status.Settings.SceneName;
 
     // ── 地图站点缓存（从「地图信息」页写入的 localStorage 键 grcs_map_stations 恢复，
     //    供按类型筛选候选池与手输站点校验使用）──
@@ -355,6 +341,11 @@
     private int _batchInterval = 3;
     private bool _moveRunning;                       // 循环下发运行中标志
     private int _moveSeq;                            // OrderId 递增序号（循环下发的唯一性）
+    /// <summary>本标签页唯一 id（跨标签页区分下发发起者，随启停/移动租约请求上传）。
+    /// 取服务端已登记的 id（导航往返不换 id，避免把自己的下发误判成"另一标签页"）。</summary>
+    private string _tabId = "";
+    /// <summary>移动循环取消令牌（页面销毁时中止循环并释放租约，防止租约被孤儿循环永久占用）。</summary>
+    private readonly CancellationTokenSource _moveCts = new();
     /// <summary>纯移动任务日志（自动下发明细，模式切到「纯移动任务」时展示）。</summary>
     private readonly List<AutoLogEntry> _batchLogs = [];
 
@@ -363,20 +354,21 @@
     private string _respClass = "";
 
     // ── 卡片折叠状态（持久化到 localStorage 键 grcs_auto_collapsed）──
-    private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["range"] = true, ["auto"] = true };
+    private Dictionary<string, bool> _collapsed = new() { ["range"] = true, ["auto"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
     {
         _collapsed[key] = !IsCollapsed(key);
         await LocalStore.SetAsync(Js, "grcs_auto_collapsed", JsonSerializer.Serialize(_collapsed));
     }
-    private Task ToggleConn() => Toggle("conn");
     private Task ToggleRange() => Toggle("range");
     private Task ToggleAutoSection() => Toggle("auto");
 
-    // ── 选点范围（grcs_auto_range：AutomationTasks / AutoRunService / ContainerTaskService 共享）──
+    // ── 选点范围（后端 /api/wcs/auto/range：AutomationTasks 遥控，AutoRunHostedService 执行）──
     private AutoRangeConfig _range = new();
     private string _rangeMarksText = "";
+    /// <summary>本页最近一次已同步到后端的范围配置指纹（用于识别「其他标签页改过」）。</summary>
+    private string _rangeFp = "";
     /// <summary>范围过滤后的候选池（实时预览用）。</summary>
     private List<MapStationLite> _rangePool => _range.ApplyTo(_mapStations);
     /// <summary>可选楼层：启用站点中符合当前类型过滤的楼层去重排序。</summary>
@@ -421,12 +413,68 @@
         }
     }
 
+    // ── 跨标签页互斥：其他标签页正在下发 → 本页警示 + 禁止下发操作 ──
+    /// <summary>轮询自动化由其他标签页启动。</summary>
+    private bool OtherTabPollActive => Auto.Running && !string.IsNullOrEmpty(Hub.Status.AutoTabId) && Hub.Status.AutoTabId != _tabId;
+    /// <summary>批量任务由其他标签页发起。</summary>
+    private bool OtherTabBatchActive => Container.Busy && !string.IsNullOrEmpty(Hub.Status.BatchTabId) && Hub.Status.BatchTabId != _tabId;
+    /// <summary>纯移动任务循环由其他标签页持有租约。</summary>
+    private bool OtherTabMoveActive => Hub.Status.MoveRunning && !string.IsNullOrEmpty(Hub.Status.MoveTabId) && Hub.Status.MoveTabId != _tabId;
+    /// <summary>是否有其他标签页正在下发（任一模式）。</summary>
+    private bool OtherTabActive => OtherTabPollActive || OtherTabBatchActive || OtherTabMoveActive;
+    private string OtherTabDesc
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (OtherTabPollActive) parts.Add("轮询自动化");
+            if (OtherTabBatchActive) parts.Add("批量任务");
+            if (OtherTabMoveActive) parts.Add("纯移动任务");
+            return string.Join("、", parts);
+        }
+    }
+
     private void ToggleRangeEnabled() { _range.Enabled = !_range.Enabled; SaveRange(); }
     private void ToggleRangeType(int bit) { _range.TypeFilter ^= bit; SaveRange(); }
+    /// <summary>保存选点范围到后端（/api/wcs/auto/range，SQLite 持久化，跨标签页/换浏览器仍在）。</summary>
     private void SaveRange()
     {
         _range.Marks = AutoRangeConfig.ParseMarks(_rangeMarksText);
-        _ = LocalStore.SetAsync(Js, "grcs_auto_range", JsonSerializer.Serialize(_range));
+        // 同步记录指纹：本页刚写入的值不会被 AutomationHub 回显误判为「其他标签页改过」而覆盖
+        _rangeFp = RangeFp(_range.Enabled, _range.TypeFilter, _range.FloorFilter, _range.Marks);
+        _ = WcsApi.PutAsync<RangeConfigDto, object>("/api/wcs/auto/range", new RangeConfigDto
+        {
+            Enabled = _range.Enabled,
+            TypeFilter = _range.TypeFilter,
+            FloorFilter = _range.FloorFilter,
+            Marks = _range.Marks,
+        });
+    }
+
+    /// <summary>范围配置指纹：规范化后比较（Mark 大小写不敏感、去重、排序，避免仅顺序差异造成乒乓刷新）。</summary>
+    private static string RangeFp(bool enabled, int typeFilter, int floorFilter, IEnumerable<string> marks)
+    {
+        var m = string.Join(",", marks
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
+        return $"{enabled}|{typeFilter}|{floorFilter}|{m}";
+    }
+
+    /// <summary>AutomationHub 轮询到范围配置变化（其他标签页改过）时，应用回本页并刷新 UI。</summary>
+    private void OnHubChanged()
+    {
+        var r = Hub.Range;
+        var fp = RangeFp(r.Enabled, r.TypeFilter, r.FloorFilter, r.Marks);
+        if (fp == _rangeFp) return;
+        _range.Enabled = r.Enabled;
+        _range.TypeFilter = r.TypeFilter;
+        _range.FloorFilter = r.FloorFilter;
+        _range.Marks = r.Marks ?? [];
+        _rangeMarksText = string.Join(", ", _range.Marks);
+        _rangeFp = fp;
+        InvokeAsync(StateHasChanged);
     }
 
     /// <summary>清空手动指定站点输入框并持久化（等价于不限站点，仅保留类型/楼层过滤）。</summary>
@@ -503,8 +551,18 @@
     private string _autoMode = "poll";
     private void OnAutoChanged() => InvokeAsync(StateHasChanged);
     private void OnContainerChanged() => InvokeAsync(StateHasChanged);
-    /// <summary>退订两个后台服务的状态变化事件，避免组件销毁后回调泄漏。</summary>
-    public void Dispose() { Auto.Changed -= OnAutoChanged; Container.Changed -= OnContainerChanged; }
+    /// <summary>退订两个后台服务的状态变化事件，避免组件销毁后回调泄漏；中止移动循环并释放租约。</summary>
+    public void Dispose()
+    {
+        if (_moveRunning)
+        {
+            _moveRunning = false;
+            _moveCts.Cancel();
+            _ = WcsApi.PostAsync("/api/wcs/auto/move/stop", new { tabId = _tabId });
+        }
+        _moveCts.Dispose();
+        Auto.Changed -= OnAutoChanged; Container.Changed -= OnContainerChanged; Hub.Changed -= OnHubChanged;
+    }
     private Task ToggleAuto() => Auto.ToggleAsync();
     private void ClearAutoLogs() => Auto.ClearLogs();
 
@@ -537,26 +595,16 @@
         // 页面销毁时在 Dispose 退订，防止泄漏
         Auto.Changed += OnAutoChanged;     // 订阅自动化状态变化（页面销毁时在 Dispose 退订）
         Container.Changed += OnContainerChanged; // 订阅容器任务状态变化
-        // 读取共享配置（内存缓存，同步读取）
-        try
-        {
-            var wh = LocalStore["grcs_warehouse"];
-            if (!string.IsNullOrEmpty(wh) && wh != "null") _sceneName = wh;
-            var grcs = LocalStore["grcs_grcs_url"];
-            if (!string.IsNullOrEmpty(grcs) && grcs != "null") _baseUrl = grcs;
-            var wcs = LocalStore["grcs_wcs_url"];
-            if (!string.IsNullOrEmpty(wcs) && wcs != "null") _wcsBaseUrl = wcs;
-        }
-        catch { }
+        // 本标签页唯一 id：优先复用服务上已登记的（导航往返不换），再交给两个遥控壳随请求上传
+        _tabId = string.IsNullOrEmpty(Auto.TabId) ? Guid.NewGuid().ToString("N") : Auto.TabId;
+        Auto.TabId = _tabId;
+        Container.TabId = _tabId;
 
         try
         {
-            var json = LocalStore["grcs_map_stations"];
-            if (!string.IsNullOrEmpty(json) && json != "null")
-            {
-                var cache = JsonSerializer.Deserialize<MapStationCache>(json, JsonOpts);
-                _mapStations = cache?.Stations ?? [];
-            }
+            // 地图站点：单一数据源在后端（/api/wcs/map，地图信息页解析成功后上传）
+            var cache = await WcsApi.GetAsync<MapCacheDto>("/api/wcs/map");
+            _mapStations = cache?.Stations ?? [];
         }
         catch { }
 
@@ -568,17 +616,24 @@
         }
         catch { }
 
-        // 选点范围配置恢复（类型/楼层/Mark 白名单）
+        // 选点范围配置恢复（后端 /api/wcs/auto/range，SQLite 持久化）
         try
         {
-            var rjson = LocalStore["grcs_auto_range"];
-            if (!string.IsNullOrEmpty(rjson) && rjson != "null")
+            var range = await WcsApi.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
+            if (range != null)
             {
-                _range = JsonSerializer.Deserialize<AutoRangeConfig>(rjson, JsonOpts) ?? new AutoRangeConfig();
+                _range.Enabled = range.Enabled;
+                _range.TypeFilter = range.TypeFilter;
+                _range.FloorFilter = range.FloorFilter;
+                _range.Marks = range.Marks ?? [];
                 _rangeMarksText = string.Join(", ", _range.Marks);
+                _rangeFp = RangeFp(range.Enabled, range.TypeFilter, range.FloorFilter, _range.Marks);
             }
         }
         catch { }
+
+        // 订阅共享轮询中枢：其他标签页改动选点范围（开启/关闭限制、类型/楼层/Mark）时回写本页
+        Hub.Changed += OnHubChanged;
     }
 
     /// <summary>
@@ -596,29 +651,64 @@
     /// <summary>
     /// 纯移动任务循环下发开关：开始后每 _batchInterval 秒在「选点范围」候选池内
     /// 随机抽 1 个站点下发 MOVE_ONLY 任务（ChangeFloor，自动分配车辆），直到手动停止。
+    /// 开始前向后端登记互斥租约（任何下发进行中则拒绝，其他标签页同步被禁）。
     /// </summary>
     private async Task ToggleMoveDispatch()
     {
-        if (_moveRunning) { _moveRunning = false; _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "⏹ 正在停止自动下发...", Color = "#fbbf24" }); StateHasChanged(); return; }
-        if (string.IsNullOrEmpty(_sceneName)) { _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 请填写场景名称（连接设置）", Color = "#f87171" }); StateHasChanged(); return; }
+        if (_moveRunning)
+        {
+            _moveRunning = false;
+            _ = WcsApi.PostAsync("/api/wcs/auto/move/stop", new { tabId = _tabId });
+            _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "⏹ 正在停止自动下发...", Color = "#fbbf24" });
+            StateHasChanged();
+            return;
+        }
+        if (string.IsNullOrEmpty(SceneName)) { _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 未配置场景名称（地图信息页系统设置）", Color = "#f87171" }); StateHasChanged(); return; }
         var pool = _batchPool;
         if (pool.Count == 0) { _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 候选站点池为空（请检查「选点范围」），无法开始", Color = "#f87171" }); StateHasChanged(); return; }
+
+        // 后端互斥登记：未启用（无任何下发进行中）才可下发，并置为启用；被拒则提示
+        var lease = await WcsApi.PostAsync<object, MoveLeaseResult>("/api/wcs/auto/move/start", new { tabId = _tabId });
+        if (lease is not { Success: true })
+        {
+            _batchLogs.Add(new AutoLogEntry
+            {
+                Time = DateTime.Now.ToString("HH:mm:ss"),
+                Message = "❌ 无法开始移动下发：" + (lease?.Reason ?? "后端拒绝（互斥：轮询或批量或另一标签页正在下发）"),
+                Color = "#f87171"
+            });
+            StateHasChanged();
+            return;
+        }
 
         _moveRunning = true;
         _moveSeq = 0;
         _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = $"▶ 开始自动下发：每 {_batchInterval} 秒随机下发 1 个纯移动任务（候选池 {pool.Count} 个，选点范围{(_range.Enabled ? "已开启" : "未开启=全图")}）", Color = "#60a5fa" });
         StateHasChanged();
         _ = MoveDispatchLoopAsync();
+        _ = MoveHeartbeatAsync();
+    }
+
+    /// <summary>移动循环属主心跳：每 5s 续约一次，防止本标签页被关闭后租约永久占用其他页。</summary>
+    private async Task MoveHeartbeatAsync()
+    {
+        while (_moveRunning && !_moveCts.IsCancellationRequested)
+        {
+            try { await Task.Delay(5000, _moveCts.Token); } catch { return; }
+            if (!_moveRunning) break;
+            _ = WcsApi.PostAsync("/api/wcs/auto/move/beat", new { tabId = _tabId });
+        }
     }
 
     private async Task MoveDispatchLoopAsync()
     {
-        while (_moveRunning)
+        while (_moveRunning && !_moveCts.IsCancellationRequested)
         {
             var pool = _batchPool;
             if (pool.Count == 0)
             {
                 _moveRunning = false;
+                _ = WcsApi.PostAsync("/api/wcs/auto/move/stop", new { tabId = _tabId });
                 _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 候选站点池为空（请检查「选点范围」），自动下发已停止", Color = "#f87171" });
                 StateHasChanged();
                 return;
@@ -628,7 +718,7 @@
             var payload = new VehicleOrderRequest
             {
                 CreateTime = DateTime.Now,
-                SceneName = _sceneName,
+                SceneName = SceneName,
                 OrderType = "MOVE_ONLY",
                 OrderId = $"{_batchOrderIdPrefix}_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper()}_{++_moveSeq}",
                 OrderName = "wcs模拟器纯移动任务",
@@ -637,7 +727,10 @@
                 StationCodes = [st.Mark],
             };
 
-            var (ok, code, json) = await WcsService.SendVehicleOrderAsync(_baseUrl, payload);
+            var resp = await WcsApi.PostAsync<object, MoveDispatchResult>("/api/wcs/auto/move/dispatch", payload);
+            var ok = resp?.Success == true;
+            var code = resp?.Code ?? 0;
+            var json = resp?.Json ?? "";
             _batchLogs.Add(new AutoLogEntry
             {
                 Time = DateTime.Now.ToString("HH:mm:ss"),
@@ -647,7 +740,7 @@
             StateHasChanged();
 
             if (!_moveRunning) break;
-            await Task.Delay(_batchInterval * 1000);
+            try { await Task.Delay(_batchInterval * 1000, _moveCts.Token); } catch { break; }
         }
         _moveRunning = false;
         _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "⏹ 自动下发已停止", Color = "#fbbf24" });

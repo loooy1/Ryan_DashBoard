@@ -167,7 +167,7 @@ html, body, #app {
 /* ── Shared UI ── */
 .section-card {
     background: #1e293b; border: 1px solid #334155; border-radius: 12px;
-    padding: 20px 24px; margin-bottom: 20px;
+    padding: 18px 22px; margin-bottom: 18px;
 }
 .section-header { font-size: 0.9rem; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
 .section-header.collapsible { cursor: pointer; user-select: none; }

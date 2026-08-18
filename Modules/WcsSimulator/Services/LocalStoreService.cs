@@ -75,26 +75,23 @@ public class LocalStoreService
         catch { }
     }
 
-    /// <summary>预加载的 key 列表（排除巨型 history/ledger key）。</summary>
+    /// <summary>预加载的 key 列表（排除巨型 history/ledger key；Skill E 后服务数据已下沉后端）。</summary>
     private static readonly string[] AllKeys =
     [
         // 共享配置
         "grcs_warehouse", "grcs_wcs_url", "grcs_grcs_url",
         // 自动模式开关
-        "grcs_si_auto_mode", "grcs_arrival_auto", "grcs_removal_auto", "grcs_ss_auto",
+        "grcs_si_auto_mode", "grcs_ss_auto",
         // 折叠状态
         "grcs_si_collapsed", "grcs_ts_collapsed", "grcs_td_collapsed", "grcs_mr_collapsed",
-        "grcs_inv_collapsed", "grcs_auto_collapsed", "grcs_adm_collapsed",
+        "grcs_inv_collapsed", "grcs_auto_collapsed",
         "grcs_vehicle_collapsed", "grcs_th_collapsed",
         // 确认/跟踪集合
         "grcs_arrival_confirmed", "grcs_si_del_arrival", "grcs_removal_confirmed",
         "grcs_si_del_removal", "grcs_ss_sent", "grcs_ss_cards",
         // 表单/任务状态
         "grcs_td_state", "grcs_ts_deleted", "grcs_ts_events",
-        // 服务数据
-        "grcs_cargo_codes", "grcs_station_locks", "grcs_auto_range",
-        "grcs_cargo_inventory", "grcs_cargo_inventory_at",
-        // 地图缓存
+        // 地图缓存（过渡期只读，验收后删）
         "grcs_map_stations",
     ];
 }

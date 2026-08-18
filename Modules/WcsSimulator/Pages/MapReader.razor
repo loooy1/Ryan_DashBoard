@@ -3,6 +3,7 @@
 @inject IWcsService WcsService
 @inject HttpClient Http
 @inject LocalStoreService LocalStore
+@inject WcsApiClient WcsApi
 @using System.Text.Json
 @using System.IO.Compression
 @using GRCS.Dashboard.Modules.WcsSimulator.Models
@@ -22,9 +23,9 @@
 
 @* ════════════════════════════════════════════════
    读取地图：接口读取 / 文件读取
-   ── 说明 ── 两种方式最终都走 ParseMapContent 解析 map.json；
-   解析成功后立即写入 localStorage 缓存，其他页面无需再读文件；
-   保存按钮同时持久化场景名与 GRCS/WCS 两个后端地址（共享键）
+   ── 说明 ── 接口读取经 WCS 后端代理下载 zip（场景名取后端设置，见下方「系统设置」）；
+   两种方式最终都走 ParseMapContent 解析 map.json；
+   解析成功后立即写入 localStorage 缓存，其他页面无需再读文件
    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleFile" title="点击折叠/展开">
@@ -33,22 +34,6 @@
     </div>
     @if (!IsCollapsed("mr_file"))
     {
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
-        <div class="form-group" style="flex:1;min-width:120px;max-width:200px;">
-            <label>场景名称</label>
-            <input type="text" @bind="_warehouse" @bind:event="oninput" placeholder="Show">
-        </div>
-        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
-            <label>GRCS 地址</label>
-            <input type="text" @bind="_grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8224">
-        </div>
-        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
-            <label>WCS 后端地址</label>
-            <input type="text" @bind="_wcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8230">
-        </div>
-        <button class="btn btn-primary" @onclick="SaveWarehouse" style="white-space:nowrap;padding:10px 12px;font-size:0.85rem;border:1px solid transparent;background-clip:padding-box;">💾 保存</button>
-        <span class="badge-ok" style="white-space:nowrap;opacity:@(_warehouseSaved ? "1" : "0");transition:opacity 0.2s;margin-bottom:5px;">✅ 已保存</span>
-    </div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
         <button class="btn btn-primary btn-sm" @onclick="LoadFromApi" disabled="@_loading">🌐 接口读取</button>
         <div class="map-file-btn" style="position:relative;display:inline-flex;">
@@ -66,7 +51,45 @@
         </div>
     }
     <div class="hint-text">
-        接口读取从 GRCS <code>GET /api/Map/GetMap?sceneName=&getTypes=feMap</code> 下载 zip 并自动解析 map.json；文件读取选择本地 <code>map.json</code> 直接解析。
+        接口读取经 WCS 后端 <code>GET /api/wcs/grcs/map</code> 从 GRCS <code>GET /api/Map/GetMap</code> 下载 zip（场景名按「系统设置」）；文件读取选择本地 <code>map.json</code> 直接解析。
+    </div>
+    }
+</div>
+
+@* ════════════════════════════════════════════════
+   系统设置：GRCS 地址 + 场景名称 + WCS 后端地址（全局唯一配置入口）
+   ── 说明 ── 保存后写入后端（/api/wcs/auto/settings，SQLite 持久化），
+   所有页面（任务下发/车辆移动/库存/信号/自动化）的 GRCS 调用与场景名
+   都以后端这份设置为准；未保存用默认值（http://localhost:8224 / Show）。
+   保存后重读一次刷新显示。WCS 后端地址为本页自身的访问地址（localStorage）。
+   ════════════════════════════════════════════════ *@
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleSettings" title="点击折叠/展开">
+        ⚙️ 系统设置
+        <span class="addr-badge">GRCS @_grcsBaseUrl</span>
+        <span class="addr-badge">场景 @_warehouse</span>
+        <span class="collapse-arrow">@(IsCollapsed("mr_settings") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("mr_settings"))
+    {
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:120px;max-width:200px;">
+            <label>场景名称</label>
+            <input type="text" @bind="_warehouse" @bind:event="oninput" placeholder="Show">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>GRCS 地址</label>
+            <input type="text" @bind="_grcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8224">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>WCS 后端地址</label>
+            <input type="text" @bind="_wcsBaseUrl" @bind:event="oninput" placeholder="http://localhost:8230">
+        </div>
+        <button class="btn btn-primary" @onclick="SaveWarehouse" style="white-space:nowrap;padding:10px 12px;font-size:0.85rem;border:1px solid transparent;background-clip:padding-box;">💾 保存</button>
+        <span class="badge-ok" style="white-space:nowrap;opacity:@(_warehouseSaved ? "1" : "0");transition:opacity 0.2s;margin-bottom:5px;">✅ 已保存</span>
+    </div>
+    <div class="hint-text" style="margin-top:6px;">
+        保存后所有页面立即按新地址/场景生效（1s 内同步）；不保存则用默认值。
     </div>
     }
 </div>
@@ -74,13 +97,15 @@
 @if (_stations.Count > 0)
 {
     @* ════════════════════════════════════════════════
-       概览：按类型统计站点分布
+       站点概览：类型统计 + 筛选 + 站点列表（合并原「筛选站点」「站点列表」两张卡）
        ── 说明 ── MapStationTypeBits.All 是站点类型位掩码注册表，
-       一个站点可同时属于多种类型（StationType 位掩码按位判断）
+       一个站点可同时属于多种类型（StationType 位掩码按位判断）；
+       筛选条件随站点缓存一起保存（MapReaderFilterState），刷新页面后恢复上次的筛选视图
        ════════════════════════════════════════════════ *@
     <div class="section-card">
         <div class="section-header collapsible" @onclick="ToggleOverview" title="点击折叠/展开">
             📊 站点概览
+            <span class="badge-info">@_filtered.Count 条</span>
             <span class="collapse-arrow">@(IsCollapsed("mr_overview") ? "▸ 展开" : "▾ 收起")</span>
         </div>
         @if (!IsCollapsed("mr_overview"))
@@ -97,24 +122,9 @@
         <div class="hint-text">
             总 @_stations.Count 个 · 启用 @(_stations.Count(s => s.StaEnable)) · 禁用 @(_stations.Count(s => !s.StaEnable))
         </div>
-        }
-    </div>
 
-    @* ════════════════════════════════════════════════
-       筛选：类型 + 关键词 + 启用状态
-       ── 说明 ── 筛选条件随站点缓存一起保存（MapReaderFilterState），
-       刷新页面后恢复上次的筛选视图
-       ════════════════════════════════════════════════ *@
-    <div class="section-card">
-        <div class="section-header collapsible" @onclick="ToggleFilter" title="点击折叠/展开">
-            🔍 筛选站点
-            <span class="badge-info">@_filtered.Count 条</span>
-            <span class="collapse-arrow">@(IsCollapsed("mr_filter") ? "▸ 展开" : "▾ 收起")</span>
-        </div>
-        @if (!IsCollapsed("mr_filter"))
-        {
-
-        @* 类型筛选 chips *@
+        @* 筛选：类型 + 关键词 + 启用状态 *@
+        <div style="border-top:1px solid #334155;margin:14px 0 10px;"></div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
             <button class="chip-btn @(_typeFilter == 0 ? "on" : "")" @onclick="() => SetTypeFilter(0)">全部</button>
             @foreach (var (bit, name) in MapStationTypeBits.All)
@@ -137,21 +147,9 @@
                 </select>
             </div>
         </div>
-        }
-    </div>
 
-    @* ════════════════════════════════════════════════
-       站点列表表格：只读展示精简字段，每行可把站点编码复制到
-       剪贴板（grcsCopyText JS 互操作函数），方便去其他页面粘贴
-       ════════════════════════════════════════════════ *@
-    <div class="section-card">
-        <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
-            📍 站点列表
-            <span class="collapse-arrow">@(IsCollapsed("mr_list") ? "▸ 展开" : "▾ 收起")</span>
-        </div>
-        @if (!IsCollapsed("mr_list"))
-        {
-        <div style="overflow-x:auto;">
+        @* 站点列表表格：只读展示精简字段，每行可把站点编码复制到剪贴板 *@
+        <div style="overflow-x:auto;margin-top:12px;">
             <table class="data-table">
                 <thead>
                     <tr>
@@ -225,7 +223,7 @@
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     // ── 卡片折叠状态（持久化到 localStorage 键 grcs_mr_collapsed，切走再回来保持）──
-    private Dictionary<string, bool> _collapsed = new() { ["mr_file"] = true, ["mr_overview"] = true, ["mr_filter"] = true, ["mr_list"] = true };
+    private Dictionary<string, bool> _collapsed = new() { ["mr_file"] = true, ["mr_settings"] = true, ["mr_overview"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
     {
@@ -233,9 +231,8 @@
         await LocalStore.SetAsync(Js, "grcs_mr_collapsed", JsonSerializer.Serialize(_collapsed));
     }
     private Task ToggleFile() => Toggle("mr_file");
+    private Task ToggleSettings() => Toggle("mr_settings");
     private Task ToggleOverview() => Toggle("mr_overview");
-    private Task ToggleFilter() => Toggle("mr_filter");
-    private Task ToggleList() => Toggle("mr_list");
     /// <summary>
     /// 初始化：从内存缓存恢复上次的地图数据（grcs_map_stations）与界面状态
     /// （同步读取，无 JS 边界）；恢复场景名与两个后端地址（共享键
@@ -265,27 +262,32 @@
         }
         catch { /* 读取缓存失败时忽略，重新选择文件即可 */ }
 
-        // 恢复场景名称（内存缓存，同步读取）
-        try
-        {
-            var wh = LocalStore["grcs_warehouse"];
-            if (!string.IsNullOrEmpty(wh) && wh != "null") _warehouse = wh;
-        }
-        catch { }
-
         // 恢复 localStorage 状态（内存缓存，同步读取）
         try
         {
             string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
-            if (V("grcs_grcs_url") is string grcs) _grcsBaseUrl = grcs;
             if (V("grcs_wcs_url") is string wcs) _wcsBaseUrl = wcs;
+            if (V("grcs_grcs_url") is string grcs) _grcsBaseUrl = grcs;
+            if (V("grcs_warehouse") is string wh && !string.IsNullOrEmpty(wh)) _warehouse = wh;
             // 切到模块时始终折叠，不恢复之前展开状态
+        }
+        catch { }
+
+        // 系统设置以后端为准（/api/wcs/auto/settings，SQLite 持久化；未保存用默认值）
+        try
+        {
+            var s = await WcsApi.GetAsync<WcsSettingsDto>("/api/wcs/auto/settings");
+            if (s != null)
+            {
+                if (!string.IsNullOrWhiteSpace(s.GrcsBaseUrl)) _grcsBaseUrl = s.GrcsBaseUrl;
+                if (!string.IsNullOrWhiteSpace(s.SceneName)) _warehouse = s.SceneName;
+            }
         }
         catch { }
     }
 
     /// <summary>
-    /// 从 GRCS 下载地图 zip：GET /api/Map/GetMap?sceneName=&getTypes=feMap，
+    /// 从 GRCS 下载地图 zip（经 WCS 后端代理 /api/wcs/grcs/map，场景名按系统设置），
     /// 流式打开 zip 找到 map.json 条目（兼容根目录或嵌套路径），
     /// 解析成功后写入 localStorage 缓存；失败清空站点并弹窗提示。
     /// </summary>
@@ -294,9 +296,14 @@
         _loading = true;
         try
         {
-            var url = $"{_grcsBaseUrl.TrimEnd('/')}/api/Map/GetMap?sceneName={Uri.EscapeDataString(_warehouse)}&getTypes=feMap";
-            var response = await Http.GetAsync(url);
+            var response = await Http.GetAsync($"{_wcsBaseUrl.TrimEnd('/')}/api/wcs/grcs/map");
             response.EnsureSuccessStatusCode();
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "";
+            if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+            {
+                var errText = await response.Content.ReadAsStringAsync();
+                throw new Exception("后端代理返回异常：" + errText);
+            }
             using var zipStream = await response.Content.ReadAsStreamAsync();
             using var zip = new ZipArchive(zipStream);
             var entry = zip.GetEntry("map.json") ?? zip.Entries.FirstOrDefault(e => e.Name == "map.json");
@@ -384,9 +391,8 @@
     }
 
     /// <summary>
-    /// 保存当前界面状态到浏览器：MapStationCache{ 站点精简列表 + 连线数 +
-    /// 保存时间 + 筛选条件 }，序列化为 JSON 写入键 grcs_map_stations；
-    /// 任务下发/车辆移动/自动化任务等页面初始化时读取同一键复用站点数据。
+    /// 保存当前界面状态：本地 localStorage（本页与其余读旧键的页面立即用）+ 上传到后端
+    /// （/api/wcs/map/upload，Skill E：自动化/其他标签页/换浏览器共用后端这一份）。
     /// </summary>
     private async Task SaveState()
     {
@@ -405,6 +411,16 @@
         await LocalStore.SetAsync(Js, "grcs_map_stations", JsonSerializer.Serialize(cache));
         _savedAt = cache.SavedAt;
         _cachedCount = cache.Stations.Count;
+        // 后端单一数据源：解析成功（非空站点集）即上传，自动化/其他标签页从 /api/wcs/map 读取
+        if (_stations.Count > 0)
+        {
+            _ = WcsApi.PostAsync("/api/wcs/map/upload", new MapUploadPayload
+            {
+                SavedAt = cache.SavedAt,
+                PathsCount = _pathsCount,
+                Stations = _stations,
+            });
+        }
     }
 
     private void SetTypeFilter(int bit)
@@ -432,13 +448,25 @@
         _ => "全部"
     };
 
-    /// <summary>保存场景名与两个后端地址：写入共享 localStorage 键
-    /// （grcs_warehouse / grcs_grcs_url / grcs_wcs_url），其余模块页面
-    /// 初始化时读取这些键恢复连接配置，实现“一次配置，全站共用”。</summary>
+    /// <summary>保存系统设置（场景名 + GRCS 地址 + WCS 后端地址）：
+    /// 写入后端 /api/wcs/auto/settings（SQLite，全站 GRCS 调用与场景名的唯一数据源）
+    /// + 共享 localStorage 键兜底；保存后重读一次刷新显示。</summary>
     private async Task SaveWarehouse()
     {
+        await WcsApi.PutAsync<object, object>("/api/wcs/auto/settings", new { grcsBaseUrl = _grcsBaseUrl, sceneName = _warehouse });
         await LocalStore.SetAsync(Js, "grcs_warehouse", _warehouse);
         await SaveAddresses();
+        // 保存后重读一次：后端为准（未保存过就用默认值）
+        try
+        {
+            var s = await WcsApi.GetAsync<WcsSettingsDto>("/api/wcs/auto/settings");
+            if (s != null)
+            {
+                if (!string.IsNullOrWhiteSpace(s.GrcsBaseUrl)) _grcsBaseUrl = s.GrcsBaseUrl;
+                if (!string.IsNullOrWhiteSpace(s.SceneName)) _warehouse = s.SceneName;
+            }
+        }
+        catch { }
         _warehouseSaved = true;
         StateHasChanged();
         await Task.Delay(2000);

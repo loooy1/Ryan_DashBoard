@@ -18,47 +18,24 @@
 <PageTitle>车辆移动</PageTitle>
 
 @* ════════════════════════════════════════════════
-   连接设置：配置 GRCS 后端地址和场景名（初始化时从共享
-   localStorage 键 grcs_grcs_url / grcs_warehouse 恢复）；
-   地图数据提示来自地图信息页写入的缓存键 grcs_map_stations
+   提示：GRCS 地址/场景名在「地图信息」页系统设置配置（后端单一数据源），
+   本页不再有连接设置；地图数据提示来自地图信息页写入的缓存
    ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleConn" title="点击折叠/展开">
-        🔌 连接设置
-        <span class="addr-badge">GRCS @_baseUrl</span>
-        <span class="collapse-arrow">@(IsCollapsed("conn") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("conn"))
-    {
-    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
-            <label>服务器地址</label>
-            <input type="text" @bind="_baseUrl" placeholder="http://localhost:8224">
-        </div>
-        <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
-            <label>场景名称</label>
-            <input type="text" @bind="_sceneName" placeholder="Show">
-        </div>
-        <div class="form-group" style="flex:1;min-width:140px;max-width:200px;">
-            <label>下发时间</label>
-            <input type="text" @bind="_createTime" placeholder="yyyy-MM-ddTHH:mm:ss">
-        </div>
-    </div>
-    <div class="hint-text">⚠️ 车辆任务走 GRCS 运力调度接口 <code>POST /api/RawOrder/ChangeFloor</code>，不是 WCS 协议 task_receive</div>
-    @if (_mapStations.Count > 0)
-    {
-        <div class="hint-text" style="color:#4ade80;">
-            🗺️ 已使用地图数据：@_mapStations.Count 个站点（保存于 @_mapSavedAt）——站点输入框可直接下拉选择
-        </div>
-    }
-    else
-    {
-        <div class="hint-text" style="color:#fbbf24;">
-            ⚠️ 未找到地图数据，请先在「地图信息」页读取 map.json（站点数据保存在浏览器中）
-        </div>
-    }
-    }
+<div class="hint-text" style="margin:0 0 12px;">
+    ⚠️ 车辆任务走 GRCS 运力调度接口 <code>POST /api/RawOrder/ChangeFloor</code>；GRCS 地址与场景名在「地图信息」页系统设置配置。
 </div>
+@if (_mapStations.Count > 0)
+{
+    <div class="hint-text" style="color:#4ade80;margin:0 0 12px;">
+        🗺️ 已使用地图数据：@_mapStations.Count 个站点（保存于 @_mapSavedAt）——站点输入框可直接下拉选择
+    </div>
+}
+else
+{
+    <div class="hint-text" style="color:#fbbf24;margin:0 0 12px;">
+        ⚠️ 未找到地图数据，请先在「地图信息」页读取 map.json（站点数据保存在浏览器中）
+    </div>
+}
 
 @* ════════════════════════════════════════════════
    编辑任务：任务信息 + 目标站点
@@ -186,9 +163,7 @@
 
 @code {
     // ── 表单字段 ──
-    private string _baseUrl = "http://localhost:8224";    // GRCS 服务器地址
-    private string _sceneName = "";                        // 场景名称
-    private string _createTime = "";                       // 下发时间
+    private string _createTime = "";                       // 下发时间（自动生成）
     private const string _orderType = "MOVE_ONLY";         // 任务类型（固定纯移动）
     private string _orderId = "";                          // 任务 ID
     private string _orderName = "";                        // 任务名称
@@ -208,14 +183,13 @@
     private int _openPicker = -1;                          // 当前展开的站点选择器行（-1=无）
 
     // ── 卡片折叠状态（持久化到 localStorage 键 grcs_vehicle_collapsed，切走再回来保持）──
-    private Dictionary<string, bool> _collapsed = new() { ["conn"] = true, ["edit"] = true, ["resp"] = true };
+    private Dictionary<string, bool> _collapsed = new() { ["edit"] = true, ["resp"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
     {
         _collapsed[key] = !IsCollapsed(key);
         await LocalStore.SetAsync(Js, "grcs_vehicle_collapsed", JsonSerializer.Serialize(_collapsed));
     }
-    private Task ToggleConn() => Toggle("conn");
     private Task ToggleEdit() => Toggle("edit");
     private Task ToggleResp() => Toggle("resp");
 
@@ -253,25 +227,14 @@
     private static readonly JsonSerializerOptions MapJsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     /// <summary>
-    /// 初始化：生成 MV_ 前缀任务 ID 与下发时间；从共享 localStorage 键
-    /// 恢复场景名与 GRCS 地址；读取地图站点缓存供下拉与校验；
-    /// 恢复折叠状态（失败则用默认全部折叠）。
+    /// 初始化：生成 MV_ 前缀任务 ID 与下发时间；
+    /// 读取地图站点缓存供下拉与校验；恢复折叠状态（失败则用默认全部折叠）。
     /// </summary>
     // 页面初始化：生成任务 ID 和时间，读取浏览器中的地图站点缓存
     protected override async Task OnInitializedAsync()
     {
         _orderId = "MV_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
         _createTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-
-        // 读取共享配置（内存缓存，同步读取）
-        try
-        {
-            var wh = LocalStore["grcs_warehouse"];
-            if (!string.IsNullOrEmpty(wh) && wh != "null") _sceneName = wh;
-            var grcs = LocalStore["grcs_grcs_url"];
-            if (!string.IsNullOrEmpty(grcs) && grcs != "null") _baseUrl = grcs;
-        }
-        catch { }
 
         try
         {
@@ -311,9 +274,7 @@
     /// </summary>
     private async Task SendVehicleOrder()
     {
-        // ── 前端校验 ──
-        if (string.IsNullOrEmpty(_baseUrl)) { ShowResp("❌ 请填写服务器地址", "error"); return; }
-        if (string.IsNullOrEmpty(_sceneName)) { ShowResp("❌ 请填写场景名称", "error"); return; }
+        // ── 前端校验（GRCS 地址/场景名已由后端系统设置统一持有）──
         if (string.IsNullOrEmpty(_orderId)) { ShowResp("❌ 任务 ID 为空", "error"); return; }
 
         var stations = _stations.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
@@ -331,11 +292,11 @@
             }
         }
 
-        // ── 构建请求体 ──
+        // ── 构建请求体（场景名由后端按系统设置覆盖）──
         var payload = new VehicleOrderRequest
         {
             CreateTime = DateTime.TryParse(_createTime, out var dt) ? dt : DateTime.Now,
-            SceneName = _sceneName,
+            SceneName = "",
             OrderType = _orderType,
             OrderId = _orderId,
             OrderName = _orderName,
@@ -344,11 +305,11 @@
             StationCodes = stations
         };
 
-        // ── 发送 HTTP 请求 ──
+        // ── 发送 HTTP 请求（经 WCS 后端代理 → GRCS /api/RawOrder/ChangeFloor）──
         _sending = true;
         StateHasChanged();
 
-        var (ok, code, json) = await WcsService.SendVehicleOrderAsync(_baseUrl, payload);
+        var (ok, code, json) = await WcsService.SendVehicleOrderAsync("", payload);
         ShowResp((ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}", ok ? "success" : "error");
 
         _sending = false;
