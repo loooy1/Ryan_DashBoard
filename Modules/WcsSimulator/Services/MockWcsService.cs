@@ -94,28 +94,8 @@ public class MockWcsService : IWcsService
 
     // ── 任务阶段（WCS 后端管理接口 /api/wcs）──
 
-    public async Task<(bool Ok, int StatusCode, string Json)> GetTaskStageEventsAsync(string baseUrl, long sinceId = 0)
-    {
-        var url = U("/api/wcs/task-stages");
-        if (sinceId > 0) url += $"?sinceId={sinceId}";
-        return await GetRawAsync(url);
-    }
-
     public async Task<(bool Ok, int StatusCode, string Json)> DeleteTaskStageAsync(string baseUrl, string taskId)
         => await DeleteRawAsync("/api/wcs/task-stages/" + Uri.EscapeDataString(taskId));
-
-    public async Task<bool> HasTaskReachedStageAsync(string baseUrl, string taskId, string stage)
-    {
-        var (ok, _, json) = await GetTaskStageEventsAsync(baseUrl);
-        if (!ok) return false;
-        try
-        {
-            var events = JsonSerializer.Deserialize<List<StageChangeEvent>>(json,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            return events?.Any(e => e.TaskId == taskId && e.Stage == stage) ?? false;
-        }
-        catch { return false; }
-    }
 
     // ── 接驳位审批（WCS 后端管理接口 /api/wcs）──
 

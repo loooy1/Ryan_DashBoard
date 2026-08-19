@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>GrcsBackend /api/wcs/auto/status 快照（与后端 AutoStatusDto 同构）。</summary>
@@ -10,8 +8,6 @@ public class AutoStatusSnapshot
     public int Interval { get; set; }
     public int FlowMode { get; set; }
     public int Dispatched { get; set; }
-    public string Status { get; set; } = "";
-    public InventoryCountsDto AutoInventory { get; set; } = new();
     public bool ContainerBusy { get; set; }
     public string BatchTabId { get; set; } = "";
     public int ContainerDone { get; set; }
@@ -20,7 +16,6 @@ public class AutoStatusSnapshot
     public InventoryCountsDto ContainerInventory { get; set; } = new();
     public bool MoveRunning { get; set; }
     public string MoveTabId { get; set; } = "";
-    public bool DispatchActive { get; set; }
     public WcsSettingsDto Settings { get; set; } = new();
     public SignalFlagsDto Signals { get; set; } = new();
 }
@@ -41,7 +36,6 @@ public class WcsSettingsDto
 
 public class SignalFlagsDto
 {
-    public bool AdmittanceAuto { get; set; }
     public bool ArrivalAuto { get; set; }
     public bool RemovalAuto { get; set; }
     public bool AutoSend { get; set; }

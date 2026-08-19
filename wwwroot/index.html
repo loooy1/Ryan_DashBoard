@@ -23,118 +23,10 @@
         // JS 桥层（Blazor WASM ↔ localStorage / 浏览器能力）
         //
         // 为什么把持久化放这里：WASM 的 IJSRuntime 调用是异步且带序列化开销的，
-        // C# 侧用 LocalStoreService 预加载小 key 进内存、TaskLedgerService 缓存大台账，
+        // C# 侧用 LocalStoreService 预加载小 key 进内存、大台账/地图走后端 SQLite，
         // 全部通过本文件暴露的 window.grcs* 函数读写 localStorage。
-        //
-        // 跨标签页同步：本标签页写 localStorage 不会触发自己的 storage 事件，
-        // 其他标签页的写入才会触发——所以"写方即时更新内存缓存、读方靠 storage
-        // 事件刷新"这套组合恰好无死循环。storage 事件的 key 为 null 表示其他
-        // 标签页被关闭，各监听器需忽略。
         // ────────────────────────────────────────────────────────────────
-        // localStorage helpers for WCS task ledger（唯一数据源，取代 history）
-        const HISTORY_KEY = 'grcs_wcs_history';
-        const TASK_LEDGER_KEY = 'grcs_task_ledger';
-
-        // 首次写入时把旧 history 迁移成台账条目后删除
-        const migrateLegacyHistory = () => {
-            try {
-                const old = localStorage.getItem(HISTORY_KEY);
-                if (old) {
-                    const entries = JSON.parse(old);
-                    if (Array.isArray(entries)) {
-                        const migrated = [];
-                        for (const e of entries) {
-                            const payload = e.Payload;
-                            if (payload && payload.Tasks && Array.isArray(payload.Tasks)) {
-                                for (const t of payload.Tasks) {
-                                    migrated.push({
-                                        TaskId: t.TaskId || '',
-                                        TaskType: t.TaskType || '',
-                                        ContainerCode: t.ContainerCode || '',
-                                        CargoCode: '',
-                                        StationCode: t.StationCode || [],
-                                        Warehouse: payload.Warehouse || '',
-                                        Time: e.Time || '',
-                                        Ok: !!e.Ok,
-                                        StatusCode: e.StatusCode || 0
-                                    });
-                                }
-                            }
-                        }
-                        if (migrated.length > 0) {
-                            let arr = [];
-                            try { arr = JSON.parse(localStorage.getItem(TASK_LEDGER_KEY) || '[]'); } catch { }
-                            localStorage.setItem(TASK_LEDGER_KEY, JSON.stringify(migrated.concat(arr).slice(0, 2000)));
-                        }
-                    }
-                }
-            } catch { }
-            localStorage.removeItem(HISTORY_KEY);
-        };
-
-        window.grcsSaveHistory = (entriesJson) => {
-            migrateLegacyHistory();
-            let entries = [];
-            try { entries = JSON.parse(entriesJson); } catch { }
-            if (!Array.isArray(entries) || entries.length === 0) return;
-            let arr = [];
-            try { arr = JSON.parse(localStorage.getItem(TASK_LEDGER_KEY) || '[]'); } catch { }
-            arr = entries.concat(arr);
-            if (arr.length > 2000) arr = arr.slice(0, 2000);
-            localStorage.setItem(TASK_LEDGER_KEY, JSON.stringify(arr));
-        };
-        window.grcsLoadHistory = () => localStorage.getItem(TASK_LEDGER_KEY) || '[]';
-        // 首读前先迁移旧 history，保证 C# 内存缓存首读即拿到完整台账
-        window.grcsLoadTaskLedgerMigrated = () => {
-            migrateLegacyHistory();
-            return localStorage.getItem(TASK_LEDGER_KEY) || '[]';
-        };
-        window.grcsClearHistory = () => localStorage.removeItem(TASK_LEDGER_KEY);
-        // 跨标签页台账变更感知：storage 事件仅在其他标签页写入时触发（本标签页写不走此事件，缓存已即时更新）
-        window.__ledgerVersion = 0;
-        window.addEventListener('storage', (e) => {
-            if (e.key === TASK_LEDGER_KEY || e.key === null) window.__ledgerVersion++;
-        });
-        window.grcsLedgerVersion = () => window.__ledgerVersion || 0;
         window.grcsCopyText = (text) => navigator.clipboard.writeText(text);
-
-        // ── 通用 storage 事件广播（用于跨标签页状态同步）──
-        // 任意 key 被其他标签页修改时，发布对应事件，供 Blazor 层订阅
-        const GRCS_STORAGE_EVENTS = [
-            'grcs_arrival_confirmed', 'grcs_removal_confirmed', 'grcs_ss_sent',
-            'grcs_ss_auto',
-            'grcs_signal_auto_leader'
-        ];
-        window.__grcsStorageEvents = {};
-        window.addEventListener('storage', (e) => {
-            if (!e.key) return; // null key = 其他标签页关闭，忽略
-            const key = e.key;
-            // 通知所有已注册的监听器
-            const listeners = window.__grcsStorageListeners || [];
-            for (const fn of listeners) { try { fn(key, e.newValue); } catch {} }
-            // 通知事件总线
-            const ev = window.__grcsStorageEvents[key];
-            if (ev) { for (const fn of ev) { try { fn(e.newValue); } catch {} } }
-        });
-
-        // 注册监听器：返回取消订阅函数
-        window.__grcsRegisterStorageListener = (key, fn) => {
-            (window.__grcsStorageListeners ||= []).push(fn);
-            return () => { const i = (window.__grcsStorageListeners || []).indexOf(fn); if (i >= 0) window.__grcsStorageListeners.splice(i, 1); };
-        };
-
-        // SignalAutoService 专用桥：监听关键状态变更，发布到 JS 事件总线，Blazor 订阅后刷新 UI
-        window.grcsRegisterStorageBridge = (bridgeName) => {
-            const dispatch = (key, value) => {
-                // 将 key 映射为事件类型
-                const evKey = 'grcs_' + key + '_changed';
-                try { window.dispatchEvent(new CustomEvent(evKey, { detail: { key, value } })); } catch {}
-            };
-            window.__grcsRegisterStorageListener('grcs_arrival_confirmed', () => dispatch('grcs_arrival_confirmed'));
-            window.__grcsRegisterStorageListener('grcs_removal_confirmed', () => dispatch('grcs_removal_confirmed'));
-            window.__grcsRegisterStorageListener('grcs_ss_sent', () => dispatch('grcs_ss_sent'));
-            window.__grcsRegisterStorageListener('grcs_ss_auto', () => dispatch('grcs_ss_auto'));
-        };
 
         // Blazor JS interop：注册/取消注册 storage 事件监听器
         // 所有 storage 变更统一派发到一个 C# 方法，由组件内部按 key 路由
@@ -157,14 +49,6 @@
             window.__grcsStorageCallbackRef = null;
         };
 
-        // 台账别名（与 history 同一数据源）
-        window.grcsSaveTaskLedger = window.grcsSaveHistory;
-        window.grcsLoadTaskLedger = () => localStorage.getItem(TASK_LEDGER_KEY) || '[]';
-        // localStorage helpers for map station cache
-        const MAP_KEY = 'grcs_map_stations';
-        window.grcsMapSave = (json) => localStorage.setItem(MAP_KEY, json);
-        window.grcsMapLoad = () => localStorage.getItem(MAP_KEY) || 'null';
-        window.grcsMapRemove = () => localStorage.removeItem(MAP_KEY);
         // generic localStorage helpers
         window.grcsStoreSave = (key, json) => localStorage.setItem(key, json);
         window.grcsStoreLoad = (key) => localStorage.getItem(key) || 'null';
@@ -176,17 +60,6 @@
             const result = {};
             for (const k of keys) result[k] = localStorage.getItem(k);
             return JSON.stringify(result);
-        };
-        // 获取元素相对视口的边界矩形（地图框选坐标换算用）
-        window.grcsGetElementRect = (el) => {
-            if (!el) return 'null';
-            const r = el.getBoundingClientRect();
-            return JSON.stringify({ left: r.left, top: r.top, width: r.width, height: r.height });
-        };
-        // 捕获指针，使拖拽移出元素后仍能收到 pointermove/pointerup（地图框选用）
-        window.grcsSetPointerCapture = (el, pointerId) => {
-            if (!el) return;
-            try { el.setPointerCapture(pointerId); } catch { }
         };
     </script>
 <script src="station-map-picker.js"></script>

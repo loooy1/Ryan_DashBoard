@@ -30,10 +30,8 @@ builder.Services.AddScoped<BackendHealthService>();
 // 一律注册 AddScoped——注册成 Singleton 会在应用启动时被 DI 容器校验拦截
 // （ScopedInSingletonException），页面白屏"An unhandled error has occurred"
 // （2026-08-14 曾因此故障：SignalAutoService 曾被误注册为 Singleton）。
-// 只有无状态、不依赖任何 Scoped 服务的服务（如 EventAggregator）才用 Singleton。
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.IWcsService,
                            GRCS.Dashboard.Modules.WcsSimulator.Services.MockWcsService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.WcsFlowStateService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.LocalStoreService>();
 // Skill E：后端遥控壳（WcsApiClient + 共享状态/日志轮询中枢 + 三个瘦壳服务）
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.WcsApiClient>();
@@ -42,7 +40,6 @@ builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.AutoRunS
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.ContainerTaskService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.SignalAutoService>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskLedgerService>();
-builder.Services.AddSingleton<GRCS.Dashboard.Modules.WcsSimulator.Services.EventAggregator>();
 // 任务阶段事件共享轮询器：全应用唯一轮询 task-stages，替代各处各自轮询
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskStageHub>();
 

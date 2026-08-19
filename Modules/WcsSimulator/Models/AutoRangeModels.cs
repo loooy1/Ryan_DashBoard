@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-
 namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
 
 /// <summary>

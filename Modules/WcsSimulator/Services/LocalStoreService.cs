@@ -23,13 +23,12 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 public class LocalStoreService
 {
     private readonly Dictionary<string, string?> _cache = new();
-
-    public bool Loaded { get; private set; }
+    private bool _preloaded;
 
     /// <summary>一次性加载所有 key 到内存（启动时调用一次，约 10ms）。</summary>
     public async Task PreloadAsync(IJSRuntime js)
     {
-        if (Loaded) return;
+        if (_preloaded) return;
         try
         {
             var keysJson = JsonSerializer.Serialize(AllKeys);
@@ -45,7 +44,7 @@ public class LocalStoreService
             }
         }
         catch { /* localStorage 不可用时忽略，后续 Get() 返回 null */ }
-        Loaded = true;
+        _preloaded = true;
     }
 
     /// <summary>同步读取（0ms，无 JS 边界）。</summary>
@@ -72,7 +71,7 @@ public class LocalStoreService
         // 折叠状态
         "grcs_si_tab", "grcs_ts_collapsed", "grcs_td_collapsed", "grcs_mr_collapsed",
         "grcs_inv_collapsed", "grcs_auto_collapsed",
-        "grcs_vehicle_collapsed", "grcs_th_collapsed",
+        "grcs_vehicle_collapsed",
         // 确认/跟踪集合（确认状态已下沉后端 workflow_state；此处仅保留标签页内删除恢复区）
         "grcs_si_del_arrival", "grcs_si_del_removal",
         // 表单/任务状态

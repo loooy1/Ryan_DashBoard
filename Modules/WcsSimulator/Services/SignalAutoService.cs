@@ -21,13 +21,9 @@ public class SignalAutoService
     public bool RemovalAuto => _hub.Status.Signals.RemovalAuto;
     public bool AutoSend => _hub.Status.Signals.AutoSend;
     public bool Running => true;    // 后端常驻
-    public bool IsLeader => true;   // 后端唯一，无需 leader 概念
-    public int PollSeconds { get; set; } = 3;
 
     public event Action? Changed;
     private void OnHubChanged() => Changed?.Invoke();
-
-    public Task EnsureStartedAsync() => Task.CompletedTask;
 
     public Task ToggleArrivalAsync() => SetAsync(!ArrivalAuto, RemovalAuto, AutoSend);
     public Task ToggleRemovalAsync() => SetAsync(ArrivalAuto, !RemovalAuto, AutoSend);

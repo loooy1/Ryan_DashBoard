@@ -21,17 +21,18 @@
     <div class="section-header collapsible" @onclick="ToggleList" title="点击折叠/展开">
         📊 任务看板
         <span class="header-right-group" style="margin-left:auto;display:flex;gap:8px;align-items:center;">
-            <button class="btn btn-outline btn-sm" @onclick="ClearHistory" @onclick:stopPropagation>🗑 清空历史</button>
             @if (_clearConfirming)
             {
-                <button class="btn btn-danger btn-sm" @onclick="ClearAll" @onclick:stopPropagation>确认清空阶段</button>
+                <button class="btn btn-danger btn-sm" @onclick="ClearHistory" @onclick:stopPropagation>确认清空</button>
                 <button class="btn btn-outline btn-sm" @onclick='() => _clearConfirming = false' @onclick:stopPropagation>取消</button>
             }
             else
             {
                 <button class="btn btn-danger btn-sm" @onclick='() => _clearConfirming = true' @onclick:stopPropagation
-                        disabled="@(_groups.Count == 0)">🗑 清空阶段</button>
+                        disabled="@(!_ledger.Any(IsDeletable))">🗑 清空</button>
             }
+            <button class="btn btn-outline btn-sm" @onclick='() => _forceConfirming = true' @onclick:stopPropagation
+                    title="无视任务状态强制删除（输入任务ID）">⚡ 强制删除</button>
             <button class="btn btn-outline btn-sm" @onclick="RefreshNow" @onclick:stopPropagation
                     disabled="@_busy">🔄 刷新</button>
         </span>
@@ -43,6 +44,17 @@
     {
         <div class="hint-text" style="color:#f87171;margin:8px 0;">
             ⚠ 无法连接 WCS 后端，请确认 GrcsBackend 已启动。@_lastError
+        </div>
+    }
+    @if (_forceConfirming)
+    {
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0;padding:8px 12px;background:#1e293b;border:1px solid #f59e0b;border-radius:8px;">
+            <span style="color:#f59e0b;font-size:0.75rem;">⚠ 强制删除无视任务状态，请输入任务ID：</span>
+            <input type="text" @bind="_forceTaskId" @bind:event="oninput" placeholder="任务ID..." @onkeydown="OnForceKeyDown"
+                   style="flex:1;min-width:200px;" autofocus />
+            <button class="btn btn-danger btn-sm" @onclick="ForceDelete" @onclick:stopPropagation
+                    disabled="@(string.IsNullOrWhiteSpace(_forceTaskId) || _busy)">确认删除</button>
+            <button class="btn btn-outline btn-sm" @onclick='() => _forceConfirming = false' @onclick:stopPropagation>取消</button>
         </div>
     }
     @* 类型筛选 + 关键字搜索 *@
@@ -81,7 +93,8 @@
                     <td>@e.Warehouse</td>
                     <td>@e.StatusCode</td>
                     <td><button class="btn btn-danger btn-xs" @onclick="() => DeleteTask(e.TaskId)" @onclick:stopPropagation
-                                title="删除该任务的全部阶段事件" disabled="@_busy">✕</button></td>
+                                title="@(IsDeletable(e) ? "删除该任务（已完成/失败）" : "执行中的任务不可删除")"
+                                disabled="@(_busy || !IsDeletable(e))">✕</button></td>
                 </tr>
                 @if (expanded)
                 {
@@ -202,6 +215,8 @@
     private Dictionary<string, List<StageChangeEvent>> _groups = [];   // TaskId → 阶段事件（时间正序）
     private Dictionary<string, string> _taskTypeMap = [];              // TaskId → TaskType（从下发历史还原）
     private bool _clearConfirming;                                     // 清空全部确认态
+    private bool _forceConfirming;                                      // 强制删除输入行显示态
+    private string _forceTaskId = "";                                   // 强制删除目标任务ID
     private System.Threading.Timer? _timer;         // 轮询定时器
     private bool _refreshing;                       // 重入保护
 
@@ -426,9 +441,11 @@
         return t != null ? $"{code}（{t.Label}）" : code;
     }
 
-    /// <summary>删除指定任务的所有阶段事件（后端 + 浏览器缓存）。</summary>
+    /// <summary>删除指定任务（仅已完成/失败可删，执行中禁止；后端删全行 + 同步缓存）。</summary>
     private async Task DeleteTask(string taskId)
     {
+        var entry = _ledgerMap.GetValueOrDefault(taskId);
+        if (entry == null || !IsDeletable(entry)) { _lastError = "执行中的任务不可删除"; return; }
         _busy = true;
         var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
         if (!ok && code != 404)
@@ -437,40 +454,68 @@
             _busy = false;
             return;
         }
-        StageHub.RemoveTask(taskId);   // 同步共享轮询器缓存，避免其他页面的等待者基于已删除事件误判
+        StageHub.RemoveTask(taskId);   // 同步共享缓存，避免其他页面的等待者基于已删除事件误判
         _groups.Remove(taskId);
         _expanded.Remove(taskId);
         _busy = false;
     }
 
-    /// <summary>清空全部任务阶段事件（后端 + 浏览器缓存）。</summary>
-    private async Task ClearAll()
+    /// <summary>清空已结束任务（已完成 FINISHED / 下发失败），执行中的任务保留。</summary>
+    private async Task ClearHistory()
     {
         _busy = true;
-        var taskIds = _groups.Keys.ToList();
-        foreach (var taskId in taskIds)
+        var deletable = _ledger.Where(IsDeletable).ToList();
+        foreach (var e in deletable)
         {
-            var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
+            var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", e.TaskId);
             if (!ok && code != 404)
             {
-                _lastError = $"删除 {taskId} 失败 HTTP {code}";
+                _lastError = $"删除 {e.TaskId} 失败 HTTP {code}";
                 _busy = false;
                 _clearConfirming = false;
                 return;
             }
         }
-        _groups.Clear();
-        StageHub.ClearAll();   // 后端已清空，同步共享轮询器缓存
+        await RefreshAll();   // 从缓存重建（执行中的任务保留在列表）
         _clearConfirming = false;
         _busy = false;
     }
 
-    /// <summary>清空全部下发历史（台账 + 后端 SQLite）。</summary>
-    private async Task ClearHistory()
+    /// <summary>任务是否可删除：下发失败（结束态）或已完成（FINISHED）→ 可删；已下发/执行中 → 禁止。</summary>
+    private bool IsDeletable(TaskLedgerEntry e)
     {
-        await Ledger.ClearAsync();
-        _ledger.Clear(); _filtered.Clear(); _visible.Clear(); _expanded.Clear();
-        StateHasChanged();
+        if (!e.Ok) return true;
+        return StageHub.FinishedTaskIds.Contains(e.TaskId);
+    }
+
+    /// <summary>强制删除：无视任务状态直接删除全行（后端 + 本地缓存 + 列表）。</summary>
+    private async Task ForceDelete()
+    {
+        var taskId = _forceTaskId.Trim();
+        if (string.IsNullOrEmpty(taskId)) return;
+        _busy = true;
+        var (ok, code, _) = await WcsService.DeleteTaskStageAsync("", taskId);
+        if (!ok && code != 404)
+        {
+            _lastError = $"强制删除失败 HTTP {code}";
+            _busy = false;
+            return;
+        }
+        StageHub.RemoveTask(taskId);   // 同步共享缓存（含 FINISHED 集合）
+        _groups.Remove(taskId);
+        _expanded.Remove(taskId);
+        _ledger.RemoveAll(x => string.Equals(x.TaskId, taskId, StringComparison.OrdinalIgnoreCase));
+        _ledgerMap.Remove(taskId);
+        _taskTypeMap.Remove(taskId);
+        ApplyFilter();
+        _forceConfirming = false;
+        _forceTaskId = "";
+        _busy = false;
+    }
+
+    private async Task OnForceKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await ForceDelete();
     }
 
     /// <summary>将任务类型代码映射为中文含义。</summary>

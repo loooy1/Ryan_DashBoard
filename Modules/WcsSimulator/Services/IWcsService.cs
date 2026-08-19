@@ -47,14 +47,8 @@ public interface IWcsService
 
     // ── 任务阶段（WCS 后端管理接口 /api/wcs）──
 
-    /// <summary>查询任务阶段变化事件列表（GET /api/wcs/task-stages；sinceId&gt;0 时仅返回 Id 更大的增量事件）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> GetTaskStageEventsAsync(string baseUrl, long sinceId = 0);
-
     /// <summary>删除指定任务的所有阶段事件（DELETE /api/wcs/task-stages/{taskId}）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> DeleteTaskStageAsync(string baseUrl, string taskId);
-
-    /// <summary>判断指定任务是否已到达某个阶段（如 FINISHED）。</summary>
-    Task<bool> HasTaskReachedStageAsync(string baseUrl, string taskId, string stage);
 
     // ── 接驳位审批（WCS 后端管理接口 /api/wcs）──
 

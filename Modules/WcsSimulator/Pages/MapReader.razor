@@ -203,8 +203,6 @@
     private List<MapStationLite> _stations = [];       // 全部站点列表（精简数据，可持久化）
     private int _pathsCount;                            // 连线数量
     private bool _loading;                              // 解析中标志
-    private string _savedAt = "";                       // 上次保存到浏览器的时间
-    private int _cachedCount;                           // 保存的站点数
 
     // ── 筛选状态（随缓存一起保存恢复）──
     private int _typeFilter;                            // 类型筛选（0=全部）
@@ -252,8 +250,6 @@
                 {
                     _stations = cache.Stations;
                     _pathsCount = cache.PathsCount;
-                    _savedAt = cache.SavedAt;
-                    _cachedCount = cache.Stations.Count;
                     _typeFilter = cache.Filter?.TypeFilter ?? 0;
                     _search = cache.Filter?.Search ?? "";
                     _enableFilter = cache.Filter?.EnableFilter ?? "";
@@ -409,8 +405,6 @@
             }
         };
         await LocalStore.SetAsync(Js, "grcs_map_stations", JsonSerializer.Serialize(cache));
-        _savedAt = cache.SavedAt;
-        _cachedCount = cache.Stations.Count;
         // 后端单一数据源：解析成功（非空站点集）即上传，自动化/其他标签页从 /api/wcs/map 读取
         if (_stations.Count > 0)
         {

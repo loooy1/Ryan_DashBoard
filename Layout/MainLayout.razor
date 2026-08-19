@@ -11,7 +11,7 @@
    主布局：三列式结构，支持三层导航
    第一列 → 功能列表（如 WCS模拟器）      —— 始终显示
    第二列 → 项目列表（如 泰国TWD项目）    —— 选中功能后出现
-   第三列 → 页面导航（如 任务下发 / 下发历史） —— 选中项目后出现，主侧边栏缩回为图标模式
+    第三列 → 页面导航（如 任务看板 / 信号交互） —— 选中项目后出现，主侧边栏缩回为图标模式
 
    导航状态在 ModuleNavigationService（Scoped，每个标签页独立）中维护，
    本布局订阅其 StateChanged 事件重绘；选中项目后直接 NavigateTo 该项目默认页面。
@@ -99,10 +99,9 @@
         await LocalStore.PreloadAsync(Js);
 
         // 常驻轮询：TaskStageHub/AutomationHub 构造即启动，这里确保每个标签页打开任意页面时它们已被创建。
-        // TaskStageHub → /api/wcs/task-stages；AutomationHub → 5 个自动化/进入申请接口 +
+        // TaskStageHub → SignalR 任务阶段推送；AutomationHub → 自动化/进入申请/信号确认轮询 +
         // 兼任后端健康探测源（喂 BackendHealthService，连接判定与侧边栏绿点同源）。
         _ = StageHub.EnsureStartedAsync();
-        _ = AutoHub.EnsureStartedAsync();
 
         Nav.StateChanged += OnNavStateChanged;
     }

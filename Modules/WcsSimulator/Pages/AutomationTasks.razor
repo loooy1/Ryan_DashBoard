@@ -260,19 +260,19 @@
 
     @* 共用尾部：日志区按当前模式显示对应流（轮询→Auto.Logs，批量→Container.Logs，纯移动→_batchLogs）*@
     <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span class="badge-info" style="margin-bottom:6px;">@(_autoMode switch { "poll" => "轮询日志", "batch" => "执行日志", _ => "移动任务日志" })</span>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+        <span class="badge-info">@(_autoMode switch { "poll" => "轮询日志", "batch" => "执行日志", _ => "移动任务日志" })</span>
         @if (_autoMode == "poll")
         {
-            <button class="btn btn-outline btn-sm" @onclick="ClearAutoLogs" disabled="@Auto.Running" style="margin-bottom:6px;">🧹 清空日志</button>
+            <button class="btn btn-outline btn-sm" @onclick="ClearAutoLogs" disabled="@Auto.Running">🧹 清空日志</button>
         }
         else if (_autoMode == "batch")
         {
-            <button class="btn btn-outline btn-sm" @onclick="ClearContainerLogs" disabled="@Container.Busy" style="margin-bottom:6px;">🧹 清空日志</button>
+            <button class="btn btn-outline btn-sm" @onclick="ClearContainerLogs" disabled="@Container.Busy">🧹 清空日志</button>
         }
         else
         {
-            <button class="btn btn-outline btn-sm" @onclick="ClearBatch" style="margin-bottom:6px;">🧹 清空日志</button>
+            <button class="btn btn-outline btn-sm" @onclick="ClearBatch">🧹 清空日志</button>
         }
     </div>
     @if (_autoMode == "poll")

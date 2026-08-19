@@ -595,9 +595,6 @@
         }
         catch { }
 
-        // 先拉起信号自动服务（LoadConfig 读自动开关），尽快进入自动状态
-        await SignalAuto.EnsureStartedAsync();
-
         // 一次性迁移：旧 localStorage 确认集合 → 后端 workflow_state（后端空时播种后清除旧键）
         _ = MigrateLegacyAsync();
 

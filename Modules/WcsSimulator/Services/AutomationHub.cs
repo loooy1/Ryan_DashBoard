@@ -24,14 +24,12 @@ public class AutomationHub : IDisposable
 
     public AutoStatusSnapshot Status { get; private set; } = new();
     public List<AutoLogEntry> Logs { get; } = [];
-    public bool IsOnline { get; private set; } = true;
     /// <summary>选点范围配置快照（随轮询刷新；AutomationTasks 页跨标签页同步用）。</summary>
     public RangeConfigDto Range { get; private set; } = new();
 
     // ── 进入申请（信号交互页「进入信号」多标签页同步）──
     public int PendingCount { get; private set; }
     public bool AdmittanceAutoMode { get; private set; }
-    public bool AdmittanceOnline { get; private set; } = true;
     public List<EntryRequestEvent> EntryEvents { get; } = [];
 
     // ── 信号确认状态（kind → 行；跨标签页同步，SignalInteraction 确认/已发送集合的事实源）──
@@ -65,19 +63,16 @@ public class AutomationHub : IDisposable
         while (!ct.IsCancellationRequested)
         {
             try { await PollAsync(); }
-            catch { IsOnline = false; }
+            catch { }
             try { await Task.Delay(1000, ct); } catch { return; }
         }
     }
-
-    /// <summary>兼容入口：循环已在构造函数启动，此方法不再做事（MainLayout 注入时调用以确保实例创建）。</summary>
-    public Task EnsureStartedAsync() => Task.CompletedTask;
 
     /// <summary>立即拉一轮（手动操作后调用，避免等下一拍）。</summary>
     public async Task RefreshNowAsync()
     {
         try { await PollAsync(); }
-        catch { IsOnline = false; }
+        catch { }
     }
 
     /// <summary>乐观更新：POST 启停成功后立即反映到快照，不等下一轮轮询（其余字段仍由轮询覆盖）。</summary>
@@ -106,8 +101,7 @@ public class AutomationHub : IDisposable
     private async Task PollAsync()
     {
         var st = await _api.GetAsync<AutoStatusSnapshot>("/api/wcs/auto/status");
-        if (st != null) { Status = st; IsOnline = true; }
-        else IsOnline = false;
+        if (st != null) Status = st;
 
         // 选点范围（自动化任务页「开启/关闭限制」等跨标签页同步）
         var range = await _api.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
@@ -115,8 +109,7 @@ public class AutomationHub : IDisposable
 
         // 进入申请（信号交互页徽章 + 事件表）；同时回报后端健康（比 BackendHealthService 的 15s 探测更实时）
         var adm = await _api.GetAsync<AdmittanceStatusDto>("/api/wcs/status");
-        if (adm != null) { PendingCount = adm.PendingCount; AdmittanceAutoMode = adm.AutoMode; AdmittanceOnline = true; }
-        else AdmittanceOnline = false;
+        if (adm != null) { PendingCount = adm.PendingCount; AdmittanceAutoMode = adm.AutoMode; }
         _health.ReportWcs(adm != null);
 
         // 信号确认状态（跨标签页同步，SignalInteraction 事实源）
