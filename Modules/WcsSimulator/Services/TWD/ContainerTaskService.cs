@@ -1,6 +1,8 @@
 using System.Text.Json;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+using GRCS.Dashboard.Modules.WcsSimulator.Services;
+
+namespace GRCS.Dashboard.Modules.WcsSimulator.Services.TWD;
 
 /// <summary>
 /// 批量容器任务遥控壳（Skill E：执行逻辑已下沉到 GrcsBackend ContainerTaskRunner）。

@@ -1,6 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
-using GRCS.Dashboard.Modules.WcsSimulator.Models;
+using GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 

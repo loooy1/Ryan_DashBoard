@@ -27,13 +27,16 @@
    GRCS 地址/场景名在「地图信息」页系统设置配置，本页无需连接设置。
    ════════════════════════════════════════════════ *@
 <div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleGroup" title="点击折叠/展开">
-        📦 任务组配置
-        <span class="badge-info">ZkWcsTaskGroupInfo</span>
-        <span class="collapse-arrow">@(IsCollapsed("td_group") ? "▸ 展开" : "▾ 收起")</span>
+    <div class="section-header collapsible" @onclick="ToggleContainer" title="点击折叠/展开">
+        📦 容器任务下发
+        <span class="hint-text" style="margin:0;">任务组配置 · 选择任务类型 · 编辑任务 · 响应结果</span>
+        <span class="collapse-arrow">@(IsCollapsed("container") ? "▸ 展开" : "▾ 收起")</span>
     </div>
-    @if (!IsCollapsed("td_group"))
+    @if (!IsCollapsed("container"))
     {
+
+    <div class="sub-header">📋 任务组配置 <span class="badge-info" style="margin-left:2px;">ZkWcsTaskGroupInfo</span></div>
+
     <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
         <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
             <label>任务组 ID</label>
@@ -51,17 +54,11 @@
             </div>
         </div>
     </div>
-    }
-</div>
 
-@* ════════════════════════════════════════════════
-   任务类型选择器：15 种托盘架/普通任务类型
-   ── 说明 ── TaskTypeRegistry 是任务类型注册表：每种类型携带
-   站点数量、站点标签、描述等元数据；切换类型会同步调整
-   所有卡片的站点输入框数量，并决定是否四行模式
-   ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleType" title="点击折叠/展开">🎯 选择任务类型
+    <div class="section-divider"></div>
+
+    <div class="sub-header">
+        🎯 选择任务类型
         @if (!string.IsNullOrEmpty(_selectedType))
         {
             <span class="badge-selected">@_selectedType</span>
@@ -70,10 +67,7 @@
         {
             <span class="badge-empty">未选择</span>
         }
-        <span class="collapse-arrow">@(IsCollapsed("td_type") ? "▸ 展开" : "▾ 收起")</span>
     </div>
-    @if (!IsCollapsed("td_type"))
-    {
 
     @* 任务类型芯片网格，点击选中 *@
     <div class="task-type-grid">
@@ -97,23 +91,13 @@
             <text>需要 @tt.StationCount 个站点: @string.Join(" → ", tt.StationLabels)</text>
         }
     </div>
-    }
-</div>
 
-@* ════════════════════════════════════════════════
-   任务卡片列表：每个卡片 = 一个任务
-   ── 说明 ── 容器/站点输入框支持地图下拉选择（候选来自地图缓存
-   grcs_map_stations 与 GRCS 库存）；四行模式第三行只读自动匹配；
-   入库段2 任务容器号自动生成并锁定不可编辑
-   ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleTasks" title="点击折叠/展开">
+    <div class="section-divider"></div>
+
+    <div class="sub-header">
         📝 编辑任务
-        <button class="btn btn-primary btn-sm" @onclick="AddTaskCard" @onclick:stopPropagation style="margin-left:auto;">+ 添加任务</button>
-        <span class="collapse-arrow">@(IsCollapsed("td_tasks") ? "▸ 展开" : "▾ 收起")</span>
+        <button class="btn btn-primary btn-sm" @onclick="AddTaskCard" style="margin-left:auto;">+ 添加任务</button>
     </div>
-    @if (!IsCollapsed("td_tasks"))
-    {
 
     <div style="display:flex;flex-direction:column;gap:10px;">
         @for (int i = 0; i < _taskCards.Count; i++)
@@ -247,21 +231,121 @@
             <span style="color:#f87171;font-size:0.85rem;align-self:center;">@_validationError</span>
         }
     </div>
-    }
-</div>
 
-@* ════════════════════════════════════════════════
-   响应结果面板：显示 GRCS 后端返回的 JSON
-   ════════════════════════════════════════════════ *@
-<div class="section-card">
-    <div class="section-header collapsible" @onclick="ToggleResp" title="点击折叠/展开">
-        📨 响应结果
-        <span class="collapse-arrow">@(IsCollapsed("td_resp") ? "▸ 展开" : "▾ 收起")</span>
-    </div>
-    @if (!IsCollapsed("td_resp"))
-    {
+    <div class="section-divider"></div>
+
+    <div class="sub-header">📨 响应结果</div>
     <div class="response-panel @_respClass">@_responseText</div>
     }
+
+</div>
+
+<div class="section-card">
+    <div class="section-header collapsible" @onclick="ToggleVehicle" title="点击折叠/展开">
+        🚚 移动任务下发
+        <span class="badge-selected">MOVE_ONLY 纯移动</span>
+        <span class="collapse-arrow">@(IsCollapsed("vehicle") ? "▸ 展开" : "▾ 收起")</span>
+    </div>
+    @if (!IsCollapsed("vehicle"))
+    {
+
+    <div class="hint-text">
+        MOVE_ONLY 支持多站点，车辆将按顺序依次前往每个目标站点执行纯移动任务；
+        不指定车辆时由调度器自动匹配空闲车辆；优先级 ≤10 时转为停车待命（Standby）。
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;">
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>任务 ID</label>
+            <input type="text" @bind="_orderId" readonly>
+        </div>
+        <div class="form-group" style="flex:1;min-width:120px;max-width:200px;">
+            <label>任务名称</label>
+            <input type="text" @bind="_orderName" placeholder="可选">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;max-width:220px;">
+            <label>指定车辆</label>
+            <input type="text" @bind="_vehicleName" placeholder="不填=自动分配">
+        </div>
+        <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
+            <label>优先级 (0-1000)</label>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <input type="range" min="0" max="1000" step="10" @bind="_vehiclePriority" style="flex:1;">
+                <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_vehiclePriority</span>
+            </div>
+        </div>
+    </div>
+    <div class="hint-text" style="margin-top:4px;">留空车辆=自动分配；优先级 ≤10 = Standby（停车待命）</div>
+
+    <div style="border-top:1px solid #334155;margin:14px 0;padding-top:14px;"></div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+        <span style="font-weight:600;font-size:0.85rem;">目标站点</span>
+        <button class="btn btn-primary btn-sm" @onclick="AddVehicleStation">+ 添加站点</button>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:8px;">
+        @for (int j = 0; j < _stations.Count; j++)
+        {
+            var sj = j;
+            <div style="display:flex;gap:8px;align-items:center;">
+                <span class="station-label">站点 @(sj+1)</span>
+                <div style="position:relative;flex:1;display:flex;min-width:0;">
+                    <input type="text" value="@_stations[sj]"
+                           @oninput="(e) => OnVehicleStationInput(sj, e)"
+                           @onfocus="() => OpenVehiclePicker(sj)"
+                           placeholder="输入搜索 / 选择站点编码"
+                           style="flex:1;border-top-right-radius:0;border-bottom-right-radius:0;min-width:0;">
+                    <button type="button" class="picker-toggle" @onclick="() => ToggleVehiclePicker(sj)" title="选择站点">▾</button>
+                    @if (_openVehiclePicker == sj)
+                    {
+                        <div class="picker-overlay" @onclick="CloseVehiclePicker"></div>
+                        <div class="picker-panel">
+                            <div class="picker-list">
+                                @if (string.IsNullOrWhiteSpace(_stations[sj]))
+                                {
+                                    <div class="hint-text" style="padding:8px;">请输入关键词搜索站点</div>
+                                }
+                                else
+                                {
+                                    @foreach (var st in VehiclePickerResults(sj))
+                                    {
+                                        <div class="picker-item" @onclick="() => PickVehicleStation(sj, st)">
+                                            <span class="picker-mark">@st.Mark</span>
+                                            <span class="picker-type">@string.Join("+", MapStationTypeBits.DecodeNames(st.StationType))</span>
+                                        </div>
+                                    }
+                                    @if (VehiclePickerResults(sj).Count == 0)
+                                    {
+                                        <div class="hint-text" style="padding:8px;">无匹配站点</div>
+                                    }
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+                @if (_stations.Count > 1)
+                {
+                    <button class="btn btn-danger btn-xs" @onclick="() => RemoveVehicleStation(sj)">✕</button>
+                }
+            </div>
+        }
+    </div>
+
+    @* 操作按钮行 *@
+    <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap;">
+        <button class="btn btn-primary" @onclick="SendVehicleOrder" disabled="@_vehicleSending">
+            @(_vehicleSending ? "⏳ 发送中..." : "🚚 下发车辆任务")
+        </button>
+        <button class="btn btn-outline" @onclick="ResetVehicleForm">🔄 重置</button>
+    </div>
+
+    <div class="section-divider"></div>
+
+    <div class="sub-header">📨 响应结果</div>
+    <div class="response-panel @_vehicleRespClass">@_vehicleRespText</div>
+    }
+
 </div>
 
 @code {
@@ -439,20 +523,15 @@
     }
 
     // ── 卡片折叠状态（持久化到 localStorage 键 grcs_td_collapsed，切走再回来保持）──
-    private Dictionary<string, bool> _collapsed = new() { ["td_group"] = true, ["td_type"] = true, ["td_tasks"] = true, ["td_resp"] = true };
+    private Dictionary<string, bool> _collapsed = new() { ["container"] = true, ["vehicle"] = true };
     private bool IsCollapsed(string key) => _collapsed.GetValueOrDefault(key, true);
     private async Task Toggle(string key)
     {
-        var wasCollapsed = IsCollapsed(key);
-        _collapsed[key] = !wasCollapsed;
+        _collapsed[key] = !IsCollapsed(key);
         await LocalStore.SetAsync(Js, "grcs_td_collapsed", System.Text.Json.JsonSerializer.Serialize(_collapsed));
-        // 展开编辑任务区时，如果容器列表还没加载过，补拉一次
-        if (wasCollapsed && key == "td_tasks" && _containerCodes.Count == 0) await LoadContainerCodes();
     }
-    private Task ToggleGroup() => Toggle("td_group");
-    private Task ToggleType() => Toggle("td_type");
-    private Task ToggleTasks() => Toggle("td_tasks");
-    private Task ToggleResp() => Toggle("td_resp");
+    private Task ToggleContainer() => Toggle("container");
+    private Task ToggleVehicle() => Toggle("vehicle");
 
     /// <summary>单个任务卡片的数据模型。</summary>
     private class TaskCardData
@@ -515,7 +594,11 @@
                 _mapStations = cache?.Stations ?? [];
             }
 
-            if (V("grcs_td_collapsed") is string cjson) _collapsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson) ?? _collapsed;
+            if (V("grcs_td_collapsed") is string cjson)
+            {
+                var c = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(cjson);
+                if (c != null) _collapsed = c;
+            }
         }
         catch { }
 
@@ -525,8 +608,8 @@
             _msgTime = DateTime.Now.ToString("yyyy-MM-ddTHH:mm");
             AddTaskCard();
         }
-        // 加载容器列表（用于容器编号下拉选择）。只在编辑任务展开时才拉。
-        if (!IsCollapsed("td_tasks")) await LoadContainerCodes();
+        // 加载容器列表（用于容器编号下拉选择）
+        await LoadContainerCodes();
     }
 
     /// <summary>
@@ -890,6 +973,102 @@
     {
         _responseText = msg;
         _respClass = cls;
+    }
+
+    // ── 移动任务下发（MOVE_ONLY：原 VehicleDispatch 页并入本卡）──
+    private string _orderId = "MV_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();  // 车辆任务 ID
+    private string _orderName = "";                        // 任务名称
+    private string _vehicleName = "";                      // 指定车辆（留空=自动分配）
+    private int _vehiclePriority = 50;                     // 车辆任务优先级
+    private List<string> _stations = [""];                 // 目标站点列表
+    private bool _vehicleSending;                          // 车辆任务发送中标志
+    private int _openVehiclePicker = -1;                   // 展开的站点选择器行（-1=无）
+    private string _vehicleRespText = "等待发送任务...";   // 移动任务响应面板文字
+    private string _vehicleRespClass = "";                 // 移动任务响应面板样式
+
+    /// <summary>车辆站点选择器候选项：启用站点 + 关键词过滤编码或类型名。</summary>
+    private List<MapStationLite> VehiclePickerResults(int idx)
+    {
+        var keyword = idx >= 0 && idx < _stations.Count ? _stations[idx] : "";
+        return _mapStations
+            .Where(s => s.StaEnable)
+            .Where(s => keyword == ""
+                || s.Mark.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+                || MapStationTypeBits.DecodeNames(s.StationType).Any(n => n.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+    }
+
+    private void OnVehicleStationInput(int idx, ChangeEventArgs e)
+    {
+        _stations[idx] = e.Value?.ToString() ?? "";
+        if (_openVehiclePicker != idx) _openVehiclePicker = idx;
+    }
+    private void OpenVehiclePicker(int idx) => _openVehiclePicker = idx;
+    private void ToggleVehiclePicker(int idx) => _openVehiclePicker = _openVehiclePicker == idx ? -1 : idx;
+    private void CloseVehiclePicker() => _openVehiclePicker = -1;
+    private void PickVehicleStation(int idx, MapStationLite st) { _stations[idx] = st.Mark; _openVehiclePicker = -1; }
+    private void AddVehicleStation() => _stations.Add("");
+    private void RemoveVehicleStation(int i) => _stations.RemoveAt(i);
+
+    /// <summary>更新移动任务响应面板内容。</summary>
+    private void ShowVehicleResp(string msg, string cls)
+    {
+        _vehicleRespText = msg;
+        _vehicleRespClass = cls;
+    }
+
+    /// <summary>下发纯移动任务：组装 VehicleOrderRequest POST 到 /api/RawOrder/ChangeFloor（经 WCS 后端代理）。</summary>
+    private async Task SendVehicleOrder()
+    {
+        if (string.IsNullOrEmpty(_orderId)) { ShowVehicleResp("❌ 任务 ID 为空", "error"); return; }
+
+        var stations = _stations.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+        if (stations.Count == 0) { ShowVehicleResp("❌ 请至少填写一个站点", "error"); return; }
+
+        // 有地图数据时校验站点必须精确存在
+        if (_mapStations.Count > 0)
+        {
+            var missing = stations
+                .Where(m => !_mapStations.Any(s => s.Mark.Equals(m, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            if (missing.Count > 0)
+            {
+                ShowVehicleResp($"❌ 站点不在地图数据中：{string.Join(", ", missing)}", "error"); return;
+            }
+        }
+
+        // ── 构建请求体（场景名由后端按系统设置覆盖）──
+        var payload = new VehicleOrderRequest
+        {
+            CreateTime = DateTime.Now,
+            SceneName = "",
+            OrderType = "MOVE_ONLY",
+            OrderId = _orderId,
+            OrderName = _orderName,
+            VehicleName = string.IsNullOrWhiteSpace(_vehicleName) ? null : _vehicleName.Trim(),
+            Priority = _vehiclePriority,
+            StationCodes = stations
+        };
+
+        // ── 发送 HTTP 请求（经 WCS 后端代理 → GRCS /api/RawOrder/ChangeFloor）──
+        _vehicleSending = true;
+        StateHasChanged();
+
+        var (ok, code, json) = await WcsService.SendVehicleOrderAsync("", payload);
+        ShowVehicleResp((ok ? "✅" : "❌") + $" HTTP {code}\n\n{json}", ok ? "success" : "error");
+
+        _vehicleSending = false;
+    }
+
+    /// <summary>重置移动任务表单：重新生成任务 ID 并清空各字段。</summary>
+    private void ResetVehicleForm()
+    {
+        _orderId = "MV_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper();
+        _orderName = "";
+        _vehicleName = "";
+        _vehiclePriority = 50;
+        _stations = [""];
+        ShowVehicleResp("等待发送任务...", "");
     }
 
     /// <summary>重置整个表单：重新生成组 ID/时间、清空类型与卡片并补一张空白卡片。</summary>

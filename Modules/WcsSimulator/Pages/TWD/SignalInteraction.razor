@@ -20,44 +20,59 @@
 </div>
 
 <div class="section-card">
-    <div class="section-header">
+    <div class="section-header collapsible" @onclick="ToggleSignalSection" title="点击折叠/展开">
         🎛 信号交互
         <span class="hint-text" style="margin:0;">选择类型查看对应信号，卡片网格随数据实时刷新</span>
+        <span class="collapse-arrow">@(_panelCollapsed ? "▸ 展开" : "▾ 收起")</span>
     </div>
+    @if (!_panelCollapsed)
+    {
 
     @* ── 第一行：四个类型卡片，点击切换下方公用展示区 ── *@
     <div class="si-type-grid">
         <button class="si-type-card @(_activeSection == "adm" ? "on" : "")" @onclick='() => SetSection("adm")'>
-            <div class="si-type-top">
+            <div class="si-type-head">
                 <span class="si-type-icon">🚦</span>
                 <span class="si-type-name">进入申请</span>
-                <span class="badge @(_pendingCount > 0 ? "badge-warn" : "badge-ok") si-type-count">@_pendingCount</span>
+                <span class="badge @(AutoHub.AdmittanceAutoMode ? "badge-ok" : "badge-warn") si-type-mode">@(AutoHub.AdmittanceAutoMode ? "自动" : "手动")</span>
             </div>
-            <span class="si-type-desc">车辆进站请求审批</span>
+            <div class="si-type-badges">
+                <span class="badge @(_pendingCount == 0 ? "badge-ok" : "badge-warn")">待确认 @_pendingCount</span>
+                <span class="badge badge-ok">已确认 @_admHandledCount</span>
+            </div>
         </button>
         <button class="si-type-card @(_activeSection == "arrival" ? "on" : "")" @onclick='() => SetSection("arrival")'>
-            <div class="si-type-top">
+            <div class="si-type-head">
                 <span class="si-type-icon">📦</span>
                 <span class="si-type-name">货物到达</span>
-                <span class="badge @(_pendingArrival > 0 ? "badge-warn" : "badge-ok") si-type-count">@_pendingArrival</span>
+                <span class="badge @(SignalAuto.ArrivalAuto ? "badge-ok" : "badge-warn") si-type-mode">@(SignalAuto.ArrivalAuto ? "自动" : "手动")</span>
             </div>
-            <span class="si-type-desc">入库接驳 container_ready</span>
+            <div class="si-type-badges">
+                <span class="badge @(_pendingArrival == 0 ? "badge-ok" : "badge-warn")">待确认 @_pendingArrival</span>
+                <span class="badge badge-ok">已确认 @_arrivalCards.Count(c => c.Confirmed)</span>
+            </div>
         </button>
         <button class="si-type-card @(_activeSection == "removal" ? "on" : "")" @onclick='() => SetSection("removal")'>
-            <div class="si-type-top">
+            <div class="si-type-head">
                 <span class="si-type-icon">📤</span>
                 <span class="si-type-name">货物移除</span>
-                <span class="badge @(_pendingRemoval > 0 ? "badge-warn" : "badge-ok") si-type-count">@_pendingRemoval</span>
+                <span class="badge @(SignalAuto.RemovalAuto ? "badge-ok" : "badge-warn") si-type-mode">@(SignalAuto.RemovalAuto ? "自动" : "手动")</span>
             </div>
-            <span class="si-type-desc">出库接驳 container_remove</span>
+            <div class="si-type-badges">
+                <span class="badge @(_pendingRemoval == 0 ? "badge-ok" : "badge-warn")">待确认 @_pendingRemoval</span>
+                <span class="badge badge-ok">已确认 @_removalCards.Count(c => c.Confirmed)</span>
+            </div>
         </button>
         <button class="si-type-card @(_activeSection == "sorting" ? "on" : "")" @onclick='() => SetSection("sorting")'>
-            <div class="si-type-top">
+            <div class="si-type-head">
                 <span class="si-type-icon">🎯</span>
                 <span class="si-type-name">分拣信号</span>
-                <span class="badge @(_pendingSorting > 0 ? "badge-warn" : "badge-ok") si-type-count">@_pendingSorting</span>
+                <span class="badge @(SignalAuto.AutoSend ? "badge-ok" : "badge-warn") si-type-mode">@(SignalAuto.AutoSend ? "自动" : "手动")</span>
             </div>
-            <span class="si-type-desc">分拣完成 operation_finish</span>
+            <div class="si-type-badges">
+                <span class="badge @(_pendingSorting == 0 ? "badge-ok" : "badge-warn")">待确认 @_pendingSorting</span>
+                <span class="badge badge-ok">已确认 @_cards.Count(c => c.Status == "Sent")</span>
+            </div>
         </button>
     </div>
 
@@ -67,7 +82,6 @@
         case "adm":
         {
             <div class="tab-toolbar">
-                <span class="badge @(AutoHub.AdmittanceAutoMode ? "badge-ok" : "badge-warn")">@(AutoHub.AdmittanceAutoMode ? "自动" : "手动")</span>
                 <button class="btn @(AutoHub.AdmittanceAutoMode ? "btn-outline" : "btn-primary") btn-xs"
                         @onclick="ToggleMode" disabled="@_busy">@(AutoHub.AdmittanceAutoMode ? "切换手动" : "切换自动")</button>
                 <button class="btn btn-outline btn-sm" @onclick='() => RefreshAdmittanceNow()' disabled="@_busy">🔄 刷新</button>
@@ -120,7 +134,6 @@
         case "arrival":
         {
             <div class="tab-toolbar">
-                <span class="badge @(SignalAuto.ArrivalAuto ? "badge-ok" : "badge-warn")">@(SignalAuto.ArrivalAuto ? "自动" : "手动")</span>
                 <button class="btn @(SignalAuto.ArrivalAuto ? "btn-outline" : "btn-primary") btn-xs"
                         @onclick="ToggleArrivalMode" disabled="@_arrivalBusy">@(SignalAuto.ArrivalAuto ? "切换手动" : "切换自动")</button>
                 <button class="btn btn-outline btn-sm" @onclick='() => RefreshArrivalsNow()' disabled="@_arrivalBusy">🔄 刷新</button>
@@ -180,7 +193,6 @@
         case "removal":
         {
             <div class="tab-toolbar">
-                <span class="badge @(SignalAuto.RemovalAuto ? "badge-ok" : "badge-warn")">@(SignalAuto.RemovalAuto ? "自动" : "手动")</span>
                 <button class="btn @(SignalAuto.RemovalAuto ? "btn-outline" : "btn-primary") btn-xs"
                         @onclick="ToggleRemovalMode" disabled="@_removalBusy">@(SignalAuto.RemovalAuto ? "切换手动" : "切换自动")</button>
                 <button class="btn btn-outline btn-sm" @onclick='() => RefreshRemovalsNow()' disabled="@_removalBusy">🔄 刷新</button>
@@ -240,7 +252,6 @@
         case "sorting":
         {
             <div class="tab-toolbar">
-                <span class="badge @(SignalAuto.AutoSend ? "badge-ok" : "badge-warn")">@(SignalAuto.AutoSend ? "自动" : "手动")</span>
                 <button class="btn @(SignalAuto.AutoSend ? "btn-outline" : "btn-primary") btn-xs"
                         @onclick="ToggleAutoSend" disabled="@_busy">@(SignalAuto.AutoSend ? "切换手动" : "切换自动")</button>
                 <button class="btn btn-outline btn-sm" @onclick='() => RefreshSortingNow()' disabled="@_busy">🔄 刷新</button>
@@ -341,6 +352,7 @@
             </div>
         </div>
     }
+    }
 </div>
 
 @code {
@@ -370,6 +382,8 @@
     private bool _autoMode;
     private bool _autoModeSeeded; // true = localStorage 有缓存，不需要从后端同步
     private int _pendingCount;
+    /// <summary>已确认数：非待确认（已批准/已放行/已拒绝）的进入申请条数。</summary>
+    private int _admHandledCount => _events.Count(e => e.Status != "Pending");
     private List<EntryRequestEvent> _events = [];
 
     // ── 货物到达（自动开关/自动确认在 SignalAutoService，后台跨页面运行）──
@@ -562,6 +576,14 @@
     private HashSet<string> _sentTasks = [];
     private List<MapStationLite> _mapStations = [];
 
+    // ── 面板折叠（持久化到 localStorage）──
+    private bool _panelCollapsed;
+    private void ToggleSignalSection()
+    {
+        _panelCollapsed = !_panelCollapsed;
+        _ = LocalStore.SetAsync(Js, "grcs_si_collapsed", _panelCollapsed ? "1" : "0");
+    }
+
     // ── 类型 tab：四个类型共用一片展示区，切换即切内容（选中项持久化）──
     private string _activeSection = "adm";
     private void SetSection(string k)
@@ -589,6 +611,7 @@
             string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
             if (V("grcs_si_auto_mode") is string am) { _autoMode = am == "1"; _autoModeSeeded = true; }
             if (V("grcs_si_tab") is string tab && tab is "adm" or "arrival" or "removal" or "sorting") _activeSection = tab;
+            if (V("grcs_si_collapsed") is string cl) _panelCollapsed = cl == "1";
             if (V("grcs_si_del_arrival") is string da) { var l = System.Text.Json.JsonSerializer.Deserialize<List<string>>(da); if (l != null) foreach (var id in l) _deletedArrivalTasks.Add(id); }
             if (V("grcs_si_del_removal") is string dr) { var l = System.Text.Json.JsonSerializer.Deserialize<List<string>>(dr); if (l != null) foreach (var id in l) _deletedRemovalTasks.Add(id); }
             if (V("grcs_map_stations") is string mapJ) { var cache = System.Text.Json.JsonSerializer.Deserialize<MapStationCache>(mapJ); _mapStations = cache?.Stations ?? []; }

@@ -1,4 +1,6 @@
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
+using GRCS.Dashboard.Modules.WcsSimulator.Services;
+
+namespace GRCS.Dashboard.Modules.WcsSimulator.Services.TWD;
 
 /// <summary>
 /// 自动化轮询遥控壳（Skill E：执行逻辑已下沉到 GrcsBackend AutoRunHostedService）。

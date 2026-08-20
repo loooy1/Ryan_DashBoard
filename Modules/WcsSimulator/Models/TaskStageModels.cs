@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
 

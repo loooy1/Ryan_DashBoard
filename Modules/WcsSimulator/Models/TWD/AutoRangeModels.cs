@@ -1,4 +1,6 @@
-namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
+using GRCS.Dashboard.Modules.WcsSimulator.Models;
+
+namespace GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 
 /// <summary>
 /// 自动化任务选点范围限制（localStorage 键 grcs_auto_range）。

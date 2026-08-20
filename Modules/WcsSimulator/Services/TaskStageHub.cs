@@ -1,4 +1,5 @@
 using GRCS.Dashboard.Modules.WcsSimulator.Models;
+using GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 using Microsoft.JSInterop;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;

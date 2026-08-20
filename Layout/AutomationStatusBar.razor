@@ -8,62 +8,31 @@
    显示 AutoRunService / ContainerTaskService / SignalAutoService 的运行状态
    ════════════════════════════════════════════════ *@
 <div class="auto-status-bar @(HasActivity ? "active" : "")">
-    @* ── AutoRun 自动化轮询 ── *@
+    @* ── 自动化：运行状态 ── *@
     <div class="asb-section" title="自动化轮询储位：
 @(Auto.Running ? "▶ 运行中" : "⏸ 已停止")
 已下发 @Auto.Dispatched 个任务
-间隔 @Auto.Interval 秒
-@(Auto.Logs.Count > 0 ? "最近: " + Auto.Logs[^1].Time + " " + Auto.Logs[^1].Message : "暂无日志")">
+间隔 @Auto.Interval 秒">
         <span class="asb-dot @(Auto.Running ? "on" : "")"></span>
         <span class="asb-label">自动化</span>
-        @if (Auto.Running)
-        {
-            <span class="asb-val on">▶ 运行中</span>
-            <span class="asb-meta">已下发 <b>@Auto.Dispatched</b></span>
-            <span class="asb-meta">@Auto.Interval s</span>
-            @if (Auto.Logs.Count > 0)
-            {
-                var last = Auto.Logs[^1];
-                <span class="asb-log" style="color:@last.Color;">@last.Time @last.Message</span>
-            }
-        }
-        else
-        {
-            <span class="asb-val">⏸ 已停止</span>
-        }
+        <span class="asb-val @(Auto.Running ? "on" : "")">@(Auto.Running ? "▶ 运行中" : "⏸ 已停止")</span>
     </div>
 
     <span class="asb-sep">│</span>
 
-    @* ── ContainerTask 容器批量任务 ── *@
-    <div class="asb-section" title="容器批量任务：
-@(Container.Busy ? "⏳ 执行中 " + Container.Done + "/" + Container.Total : "⏸ 空闲")
-@(string.IsNullOrEmpty(Container.Status) ? "" : Container.Status)">
+    @* ── 容器：空托数 / 带货托数 ── *@
+    <div class="asb-section" title="容器库存缓存：
+空托 @Container.EmptyPallets 个
+带货托 @Container.LoadedPallets 个">
         <span class="asb-dot @(Container.Busy ? "busy" : "")"></span>
-        <span class="asb-label">容器批量</span>
-        @if (Container.Busy)
-        {
-            <span class="asb-val busy">⏳ @Container.Done/@Container.Total</span>
-            <span class="asb-log">@Container.Status</span>
-        }
-        else if (!string.IsNullOrEmpty(Container.Status) && Container.Status.Contains("完成"))
-        {
-            <span class="asb-val ok">✓ 完成</span>
-            <span class="asb-log">@Container.Status</span>
-        }
-        else
-        {
-            <span class="asb-val">⏸ 空闲</span>
-            @if (!string.IsNullOrEmpty(Container.Status))
-            {
-                <span class="asb-log">@Container.Status</span>
-            }
-        }
+        <span class="asb-label">容器</span>
+        <span class="asb-meta">空托 <b>@Container.EmptyPallets</b></span>
+        <span class="asb-meta">带货托 <b>@Container.LoadedPallets</b></span>
     </div>
 
     <span class="asb-sep">│</span>
 
-    @* ── SignalAuto 信号自动确认 ── *@
+    @* ── 信号自动：到达 / 移除 / 分拣 ── *@
     <div class="asb-section" title="信号自动确认：
 到达自动@(Signal.ArrivalAuto ? " ✓ 开启" : " ✗ 关闭")
 移除自动@(Signal.RemovalAuto ? " ✓ 开启" : " ✗ 关闭")

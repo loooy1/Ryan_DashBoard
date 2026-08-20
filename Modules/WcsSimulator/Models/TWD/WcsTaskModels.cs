@@ -1,4 +1,4 @@
-namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
+namespace GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 
 /// <summary>预设的任务类型信息。</summary>
 /// <param name="Value">任务类型枚举值，对应 GRCS 后端 RawOrderType</param>

@@ -1,4 +1,4 @@
-using GRCS.Dashboard.Modules.WcsSimulator.Models;
+using GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 

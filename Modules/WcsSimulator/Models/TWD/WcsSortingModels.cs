@@ -1,4 +1,4 @@
-namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
+namespace GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 
 /// <summary>
 /// 分拣完成通知请求体（WCS → GRCS，POST /api/v{version}/container_operation_finish）。

@@ -36,10 +36,10 @@ builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.LocalSto
 // Skill E：后端遥控壳（WcsApiClient + 共享状态/日志轮询中枢 + 三个瘦壳服务）
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.WcsApiClient>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.AutomationHub>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.AutoRunService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.ContainerTaskService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.SignalAutoService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskLedgerService>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TWD.AutoRunService>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TWD.ContainerTaskService>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TWD.SignalAutoService>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TWD.TaskLedgerService>();
 // 任务阶段事件共享轮询器：全应用唯一轮询 task-stages，替代各处各自轮询
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskStageHub>();
 

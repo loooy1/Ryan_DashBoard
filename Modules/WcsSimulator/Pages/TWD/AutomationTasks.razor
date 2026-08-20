@@ -169,7 +169,7 @@
             <button class="btn @(Auto.Running ? "btn-danger" : "btn-primary")" @onclick="ToggleAuto" disabled="@(!Auto.Running && (Container.Busy || OtherTabActive))">
                 @(Auto.Running ? "⏹ 停止" : "▶ 启动")
             </button>
-            <button class="btn btn-outline btn-sm" @onclick="ClearAutoLogs" disabled="@Auto.Running">🧹 清空日志</button>
+            <button class="btn btn-outline btn-sm" @onclick="RefreshContainerInventory" disabled="@Container.Busy">📋 查询库存</button>
             @if (Auto.Running)
             {
                 <span class="hint-text">⏳ 轮询中... 已下发 @Auto.Dispatched 个任务</span>
