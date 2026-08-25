@@ -102,6 +102,7 @@
         // TaskStageHub → SignalR 任务阶段推送；AutomationHub → 自动化/进入申请/信号确认轮询 +
         // 兼任后端健康探测源（喂 BackendHealthService，连接判定与侧边栏绿点同源）。
         _ = StageHub.EnsureStartedAsync();
+        // 模块执行已统一迁移到后端（ModuleRunService + FinishedModuleWatcher），前端不再运行执行器。
 
         Nav.StateChanged += OnNavStateChanged;
     }

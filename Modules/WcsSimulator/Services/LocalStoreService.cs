@@ -76,6 +76,8 @@ public class LocalStoreService
         "grcs_si_del_arrival", "grcs_si_del_removal",
         // 表单/任务状态
         "grcs_td_state",
+        // 任务类型模板 / 功能模块（注册表持久化，跨页共享；新标签页需预载才能同步读）
+        "grcs_td_templates", "grcs_si_modules",
         // 地图缓存（过渡期只读，验收后删）
         "grcs_map_stations",
     ];

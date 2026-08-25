@@ -3,41 +3,31 @@
 @inject LocalStoreService LocalStore
 @inject WcsApiClient WcsApi
 @inject AutomationHub Hub
-@inject AutoRunService Auto
-@inject ContainerTaskService Container
+@inject GRCS.Dashboard.Modules.WcsSimulator.Services.MoveLoopService MoveLoop
 @implements IDisposable
 @using System.Text.Json
 @using GRCS.Dashboard.Modules.WcsSimulator.Models
 
 @* ════════════════════════════════════════════════
-   页面职责：WCS 模拟器的「自动化任务」页，三个独立功能区块
-   ① 批量移动任务下发：从地图缓存按来源（手输 / 类型+楼层）筛选候选池，
-      随机生成一批 MOVE_ONLY 任务并逐条经 WCS 后端 /api/wcs/auto/move/dispatch
-      转投 GRCS /api/RawOrder/ChangeFloor（前端不再直连 GRCS）
-   ② 自动容器任务下发：执行状态托管到单例服务 ContainerTaskService，
-      两段式任务编排在服务内部完成，切换模块不中断
-   ③ 自动化轮询储位：运行状态托管到单例服务 AutoRunService，
-      页面仅订阅 Changed 事件刷新，日志与计数跨导航存活
-   ── 交互服务 ──
-   WcsApiClient：GrcsBackend 管理面 API（含移动任务下发中转）
-   ContainerTaskService / AutoRunService：跨页面存活的后台执行服务
-   LocalStoreService：配置与折叠状态持久化到浏览器 localStorage
-   ════════════════════════════════════════════════ *@
+    页面职责：WCS 模拟器的「自动化任务」页，两个独立功能区块
+    ① 纯移动任务：从「选点范围」筛选候选池，循环下发 MOVE_ONLY 任务（GRCS ChangeFloor）
+    ② 自动化模板：用户自定义的线性步骤模板（选托盘/选货物/执行任务模板），
+       由后端 AutoTemplateRunner 按模板执行（轮询或单次）；模板存后端跨浏览器共享
+    ── 交互服务 ──
+    WcsApiClient：GrcsBackend 管理面 API
+    AutomationHub：状态/日志共享轮询中枢（1s 刷新）
+    LocalStoreService：配置与折叠状态持久化到浏览器 localStorage
+    ════════════════════════════════════════════════ *@
 <PageTitle>自动化任务</PageTitle>
 
-@* ════════════════════════════════════════════════
-   提示：GRCS 地址/场景名在「地图信息」页系统设置配置（后端单一数据源），
-   本页自动读取（Hub.Status.Settings），无需连接设置
-   ════════════════════════════════════════════════ *@
 <div class="hint-text" style="margin:0 0 12px;">
     GRCS 地址与场景名在「地图信息」页系统设置配置，本页自动读取；自动化任务由后端执行。
 </div>
 
 @* ════════════════════════════════════════════════
-    选点范围：限制自动化任务（轮询储位 + 自动容器）的选点范围。
-    配置持久化到后端（/api/wcs/auto/range），两个服务加载时按此过滤候选池。
-    支持 站点类型 + 楼层 + 手动 Mark 白名单（三者 AND）。
-   ════════════════════════════════════════════════ *@
+    选点范围：限制自动化模板与纯移动任务的选点范围。
+    配置持久化到后端（/api/wcs/auto/range）；支持 站点类型 + 楼层 + 手动 Mark 白名单（三者 AND）。
+    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleRange" title="点击折叠/展开">
         🎯 选点范围
@@ -50,7 +40,7 @@
     </div>
     @if (!IsCollapsed("range"))
     {
-    <div class="hint-text" style="margin-bottom:8px;">开启后，「自动化」与「自动容器任务下发」只在下述范围内随机选点（接驳位/储位/分拣台）。</div>
+    <div class="hint-text" style="margin-bottom:8px;">开启后，自动化模板与纯移动任务只在下述范围内随机选点（接驳位/储位/分拣台）。</div>
 
     <div class="form-group">
         <label>站点类型（可多选，不选=不限类型）</label>
@@ -102,17 +92,17 @@
 </div>
 
 @* ════════════════════════════════════════════════
-   自动化（轮询储位 / 批量任务 / 纯移动任务，单卡片三模式）
-   ── 说明 ── 本质是同一套两段式容器任务（入库/出库/分拣）的两种触发方式：
-   轮询发现（AutoRunService，按 Interval 秒轮询储位）+ 一次性批量（ContainerTaskService），
-   外加批量纯移动任务（MOVE_ONLY，候选池 = 选点范围，逐条 POST ChangeFloor）。
-   运行状态与日志在各自服务内，页面通过 Auto/Container.Changed 事件订阅刷新，切走再回来仍然可见。
-   轮询与批量互斥启动（防并发撞库存）；纯移动任务候选池受「选点范围」约束。
-   ════════════════════════════════════════════════ *@
+    自动化（模板 / 纯移动任务，单卡片两模式）
+    ── 模板模式 ── 用户自定义线性步骤模板：每步从 选托盘/选货物/执行任务模板 中选。
+    选托盘/选货物从范围内库存随机抽（取出即从本轮机池移除）；执行任务模板用前置步骤挑出的
+    托盘/货物填充容器与起点下发单个 GRCS 任务。模板存后端、跨浏览器共享。
+    ── 纯移动模式 ── 候选池=选点范围，循环下发 MOVE_ONLY 任务。
+    两模式与移动循环互斥（防并发撞库存），运行状态/日志由后端统一提供，切走再回来仍可见。
+    ════════════════════════════════════════════════ *@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleAutoSection" title="点击折叠/展开">
-        🤖 自动化 · 轮询储位 / 批量任务 / 纯移动
-        <span class="badge-info">两段式容器 + MOVE_ONLY</span>
+        🤖 自动化 · 模板 / 纯移动
+        <span class="badge-info">用户自定义 + MOVE_ONLY</span>
         <span class="collapse-arrow">@(IsCollapsed("auto") ? "▸ 展开" : "▾ 收起")</span>
     </div>
     @if (!IsCollapsed("auto"))
@@ -127,107 +117,174 @@
         <div class="range-warning">⚠ 另一标签页正在下发任务（@OtherTabDesc），本页已禁止下发操作，避免并发撞车。</div>
     }
 
-    @* 模式切换：轮询自动化 / 批量任务 / 纯移动任务 *@
+    @* 模式切换：模板 / 纯移动任务 *@
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
-        <button class="chip-btn @(_autoMode == "poll" ? "on" : "")" @onclick='() => _autoMode = "poll"'>🔄 轮询自动化</button>
-        <button class="chip-btn @(_autoMode == "batch" ? "on" : "")" @onclick='() => _autoMode = "batch"'>📦 批量任务</button>
+        <button class="chip-btn @(_autoMode == "template" ? "on" : "")" @onclick='() => _autoMode = "template"'>🧩 自动化模板</button>
         <button class="chip-btn @(_autoMode == "move" ? "on" : "")" @onclick='() => _autoMode = "move"'>🚚 纯移动任务</button>
     </div>
 
     @* 模式内容区：固定最小高度，切换模式时下方分割线/日志区不跳动 *@
     <div style="min-height:200px;">
-    @if (_autoMode == "poll")
+    @if (_autoMode == "template")
     {
-        @* ── 轮询模式（AutoRunService）── *@
-        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
-            <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
+        @* ── 模板模式 ── *@
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;">
+            @* 左：模板列表 *@
+            <div style="min-width:220px;flex:1 1 100%;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <label style="margin:0;">模板列表 <span class="addr-badge">已选 @_selectedIds.Count</span></label>
+                    <button class="btn btn-outline btn-sm" @onclick="NewTemplate">➕ 新增</button>
+                </div>
+                <div style="display:flex;flex-direction:row;flex-wrap:wrap;gap:10px;">
+                    @foreach (var t in Hub.Status.Templates)
+                    {
+                        <div class="tt-row @(_selectedIds.Contains(t.Id) ? "on" : "")" style="flex:0 0 calc((100% - 40px) / 5);" @onclick="() => ToggleSelect(t.Id)">
+                            <div class="tt-row-head">
+                                <div class="tt-name">@t.Name</div>
+                                <button class="btn btn-outline btn-xs tt-edit" @onclick="() => OpenEditor(t.Id)" @onclick:stopPropagation title="编辑模板">✎ 编辑</button>
+                            </div>
+                            <div class="tt-steps">@string.Join(" → ", t.Steps.Select(s => StepLabel(s)))</div>
+                        </div>
+                    }
+                    @if (Hub.Status.Templates.Count == 0)
+                    {
+                        <div class="hint-text">暂无模板，点击「新增」创建</div>
+                    }
+                </div>
+            </div>
+
+            @* 模板编辑弹窗：点击「新增」或左侧模板打开 *@
+            @if (_editorOpen)
+            {
+                <div class="template-modal-overlay" @onclick="CloseEditor">
+                    <div class="tpl-modal" @onclick:stopPropagation>
+                        <div class="tpl-modal-header">
+                            <div class="tpl-modal-title">
+                                <div>🤖 自动化模板</div>
+                                <div class="tpl-modal-sub">@(_editing.Name)</div>
+                            </div>
+                            <button class="tpl-modal-close" @onclick="CloseEditor" title="关闭">✕</button>
+                        </div>
+                        <div class="tpl-modal-body">
+                            <div class="form-group" style="margin-bottom:10px;">
+                                <label>模板名称</label>
+                                <input @bind="_editing.Name" placeholder="如：空托入库再分拣" />
+                            </div>
+
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                                <label style="margin:0;">步骤（按从上到下顺序执行）</label>
+                                <button class="btn btn-outline btn-sm" @onclick="AddStep">➕ 添加步骤</button>
+                            </div>
+
+                            <div style="display:flex;flex-direction:column;gap:14px;">
+                                @for (int i = 0; i < _editing.Steps.Count; i++)
+                                {
+                                    var idx = i;
+                                    var step = _editing.Steps[i];
+                                    <div class="step-card step-@(step.Kind)">
+                                        <div class="step-head">
+                                            <span class="step-pill">step@(i + 1)</span>
+                                            <select class="step-kind" @bind="step.Kind" @onclick:stopPropagation>
+                                                <option value="PickPallet">选托盘</option>
+                                                <option value="PickLoadedPallet">选带货托</option>
+                                                <option value="PickCargo">选货物</option>
+                                                <option value="RunTemplate">执行任务模板</option>
+                                            </select>
+                                            <label class="step-toggle" title="等待完成再继续下一步：含终点模块时强制等待模块 success；无终点模块时按 FINISHED 等待。关闭则下发后立即走下一步。">
+                                                <span class="toggle-switch @(step.WaitForFinish ? "on" : "")" @onclick="() => step.WaitForFinish = !step.WaitForFinish">
+                                                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                                </span>
+                                                <span class="step-toggle-text">等待完成</span>
+                                            </label>
+                                            <span style="flex:1;"></span>
+                                            <button class="btn btn-outline btn-xs" @onclick="() => MoveStep(idx, -1)" disabled="@(i == 0)" title="上移">↑</button>
+                                            <button class="btn btn-outline btn-xs" @onclick="() => MoveStep(idx, 1)" disabled="@(i == _editing.Steps.Count - 1)" title="下移">↓</button>
+                                            <button class="btn btn-outline btn-xs" @onclick="() => RemoveStep(idx)" title="删除">✕</button>
+                                        </div>
+                                        <div class="step-body">
+                                            @if (step.Kind == "PickPallet")
+                                            {
+                                                <select class="step-sub" @bind="step.PalletFilter">
+                                                    <option value="Empty">空托</option>
+                                                    <option value="Loaded">带货托</option>
+                                                    <option value="Any">任意</option>
+                                                </select>
+                                            }
+                                            else if (step.Kind == "RunTemplate")
+                                            {
+                                                <select class="step-sub step-tpl" @bind="step.TemplateValue">
+                                                    <option value="">— 选择任务模板 —</option>
+                                                    @foreach (var tt in TaskTypeRegistry.All)
+                                                    {
+                                                        <option value="@tt.Value">@tt.Label (@tt.Value)</option>
+                                                    }
+                                                </select>
+                                            }
+                                            <input class="step-label" @bind="step.Label" placeholder="步骤备注(可选)" />
+                                            @if (i >= 1 && step.Kind == "RunTemplate")
+                                            {
+                                                <label class="step-toggle" title="容器是否使用前置步骤挑选的托盘/货物号；关闭则按模板容器号前缀自动生成（如入库段2）。">
+                                                    <span class="toggle-switch @(step.UsePickedContainer ? "on" : "")" @onclick="() => step.UsePickedContainer = !step.UsePickedContainer">
+                                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                                    </span>
+                                                    <span class="step-toggle-text">使用前置挑选的容器</span>
+                                                </label>
+                                                <label class="step-toggle" title="起点是否取自前置步骤的终点（链路衔接）；关闭则按模板起点类型在选点范围内自行选点。">
+                                                    <span class="toggle-switch @(step.UsePickedStart ? "on" : "")" @onclick="() => step.UsePickedStart = !step.UsePickedStart">
+                                                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                                                    </span>
+                                                    <span class="step-toggle-text">起点取自前置终点</span>
+                                                </label>
+                                            }
+                                        </div>
+                                        @if (step.Kind == "RunTemplate" && string.IsNullOrEmpty(step.TemplateValue))
+                                        {
+                                            <div class="hint-text" style="margin:6px 0 0;">请选择要执行的任务模板（来自「任务下发」页的已生成模板）</div>
+                                        }
+                                    </div>
+                                }
+                                @if (_editing.Steps.Count == 0)
+                                {
+                                    <div class="hint-text">暂无步骤，点击「添加步骤」</div>
+                                }
+                            </div>
+
+                            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;">
+                                <button class="btn btn-primary" @onclick="SaveTemplate" disabled="@(Hub.Status.Running)">💾 保存模板</button>
+                                <button class="btn btn-outline btn-sm" @onclick="RequestDeleteTemplate" disabled="@(Hub.Status.Running)">🗑 删除模板</button>
+                                <button class="btn btn-outline btn-sm" @onclick="CloseEditor">取消</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        @* 运行控制 *@
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:14px;border-top:1px dashed #334155;padding-top:12px;">
+            <div class="form-group" style="flex:1;min-width:120px;max-width:160px;">
                 <label>轮询间隔(秒)</label>
-                <input type="number" @bind="Auto.Interval" min="1" max="60" step="1" />
+                <input type="number" @bind="_intervalSec" min="1" max="600" step="1" />
             </div>
-            <div class="hint-text" style="padding-bottom:6px;">
-                发现空托 → 入库；任务完成后自动解除占用，下轮可再次发现
-            </div>
-        </div>
-
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">
-            <span class="hint-text" style="padding-bottom:4px;align-self:center;">带货托任务：</span>
-            <button class="btn btn-sm @(Auto.FlowMode == 0 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 0'>🔀 出库/分拣交替</button>
-            <button class="btn btn-sm @(Auto.FlowMode == 1 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 1'>🔀 只分拣</button>
-            <button class="btn btn-sm @(Auto.FlowMode == 2 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 2'>📤 只出库</button>
-            <button class="btn btn-sm @(Auto.FlowMode == 3 ? "btn-primary" : "btn-outline")" @onclick='() => Auto.FlowMode = 3'>🚫 无任务</button>
-        </div>
-
-        @if (AutoRangeWarnings.Count > 0)
-        {
-            <div class="range-warning">
-                ⚠ @string.Join("；", AutoRangeWarnings)
-                @if (_range.Enabled) { <text>请在「选点范围」中补充对应站点类型。</text> }
-            </div>
-        }
-
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;">
-            <button class="btn @(Auto.Running ? "btn-danger" : "btn-primary")" @onclick="ToggleAuto" disabled="@(!Auto.Running && (Container.Busy || OtherTabActive))">
-                @(Auto.Running ? "⏹ 停止" : "▶ 启动")
+            <button class="btn @(Hub.Status.Running ? "btn-danger" : "btn-primary")" @onclick="TogglePoll"
+                    disabled="@(!Hub.Status.Running && (OtherTabActive || _selectedIds.Count == 0))">
+                @(Hub.Status.Running ? "⏹ 停止轮询" : "▶ 启动轮询")
             </button>
-            <button class="btn btn-outline btn-sm" @onclick="RefreshContainerInventory" disabled="@Container.Busy">📋 查询库存</button>
-            @if (Auto.Running)
+            <button class="btn btn-danger" @onclick="RequestForceStop" title="停止轮询、放弃进行中任务、释放所有占用与站点锁并清空日志；重启后不再自动恢复">🧹 全部重置</button>
+            <button class="btn btn-outline" @onclick="QueryInventorySummary" disabled="@_invLoading">
+                📦 查库存
+            </button>
+            <span class="hint-text" style="padding-bottom:6px;">
+                @if (Hub.Status.Running) { <text>轮询中… 已执行 @Hub.Status.Executed 个任务（@Hub.Status.ActiveTemplateName）</text> }
+                else if (_selectedIds.Count == 0) { <text>请先在左侧选择至少一个模板（可多选）</text> }
+            </span>
+            @if (_invSummary != null)
             {
-                <span class="hint-text">⏳ 轮询中... 已下发 @Auto.Dispatched 个任务</span>
+                <span class="hint-text" style="padding-bottom:6px;margin-left:auto;">
+                    纯空托 <b style="color:#38bdf8">@_invSummary.Empty</b> ｜ 带货托 <b style="color:#38bdf8">@_invSummary.Loaded</b> ｜ 纯货物 <b style="color:#38bdf8">@_invSummary.Cargo</b> ｜ 锁定中 <b style="color:#f59e0b">@_invSummary.Locked</b>
+                </span>
             }
         </div>
-    }
-    else if (_autoMode == "batch")
-    {
-        @* ── 批量模式（ContainerTaskService，原「自动容器任务下发」卡片搬入）── *@
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
-            <button class="btn @(_containerFlow == 1 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 1'>
-                📥 空托盘入库
-            </button>
-            <button class="btn @(_containerFlow == 2 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 2'>
-                📤 带货托盘出库
-            </button>
-            <button class="btn @(_containerFlow == 3 ? "btn-primary" : "btn-outline")" @onclick='() => _containerFlow = 3'>
-                🔀 带货托盘分拣
-            </button>
-        </div>
-
-        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
-            <div class="form-group" style="flex:1;min-width:100px;max-width:140px;">
-                <label>任务数量</label>
-                <input type="number" @bind="_containerCount" min="1" max="100" />
-            </div>
-            <div class="form-group" style="flex:1;min-width:120px;max-width:180px;">
-                <label>下发间隔(秒)</label>
-                <input type="number" @bind="_containerInterval" min="0" max="30" step="1">
-            </div>
-        </div>
-
-        @if (ContainerRangeWarnings.Count > 0)
-        {
-            <div class="range-warning">
-                ⚠ @string.Join("；", ContainerRangeWarnings)
-                @if (_range.Enabled) { <text>请在「选点范围」中补充对应站点类型。</text> }
-            </div>
-        }
-
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-            <button class="btn btn-outline btn-sm" @onclick="RefreshContainerInventory" disabled="@Container.Busy">📋 查询库存</button>
-            <button class="btn btn-primary" @onclick="ExecuteContainerAuto" disabled="@(Container.Busy || Auto.Running || OtherTabActive)">
-                @(Container.Busy ? $"⏳ 执行中 {Container.Done}/{Container.Total} ..." : "🚀 执行")
-            </button>
-            @if (Auto.Running)
-            {
-                <span class="hint-text">轮询运行中，批量执行已禁用</span>
-            }
-        </div>
-
-        @* 库存缓存（只在批量模式显示；轮询每轮自查，不需要） *@
-        @if (Container.EmptyPallets > 0 || Container.LoadedPallets > 0 || Container.Cargos > 0)
-        {
-            <div class="hint-text" style="margin-top:6px;">
-                库存缓存@(_range.Enabled ? "（范围内）" : "（全图）")：空托 @Container.EmptyPallets / 带货托 @Container.LoadedPallets / 货物 @Container.Cargos / 任务可用货物 @Container.PairedCargos
-            </div>
-        }
     }
     else
     {
@@ -235,12 +292,12 @@
         <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
             <div class="form-group" style="flex:1;min-width:90px;max-width:120px;">
                 <label>下发间隔(秒)</label>
-                <input type="number" @bind="_batchInterval" min="0" max="60" step="1">
+                <input type="number" @bind="_batchInterval" min="1" max="600" step="1" />
             </div>
             <div class="form-group" style="flex:1;min-width:150px;max-width:250px;">
                 <label>优先级 (0-1000)</label>
                 <div style="display:flex;align-items:center;gap:10px;">
-                    <input type="range" min="0" max="1000" step="10" @bind="_batchPriority" style="flex:1;">
+                    <input type="range" min="0" max="1000" step="10" @bind="_batchPriority" style="flex:1;" />
                     <span style="font-weight:700;color:#38bdf8;min-width:36px;text-align:center;">@_batchPriority</span>
                 </div>
             </div>
@@ -249,8 +306,8 @@
             MOVE_ONLY 纯移动任务，统一自动分配车辆；候选站点取自「选点范围」@(_range.Enabled ? "" : "（未开启 = 全图启用站点）")，当前候选 @_batchPool.Count 个。
         </div>
 
-        <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;">
-            <button class="btn @(_moveRunning ? "btn-danger" : "btn-primary")" @onclick="ToggleMoveDispatch" disabled="@(!_moveRunning && (Auto.Running || Container.Busy || OtherTabActive))">
+        <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;align-items:center;">
+            <button class="btn @(_moveRunning ? "btn-danger" : "btn-primary")" @onclick="ToggleMoveDispatch" disabled="@(!_moveRunning && (Hub.Status.Running || OtherTabActive))">
                 @(_moveRunning ? "⏹ 停止自动下发" : "▶ 开始自动下发")
             </button>
             <span class="hint-text" style="margin:0;">每 @_batchInterval 秒在选点范围内随机抽 1 个站点下发 MOVE_ONLY 任务（自动分配车辆），点击停止结束</span>
@@ -258,68 +315,111 @@
     }
     </div>
 
-    @* 共用尾部：日志区按当前模式显示对应流（轮询→Auto.Logs，批量→Container.Logs，纯移动→_batchLogs）*@
+    @* 共用尾部：日志区（二级目录：父「第 N 轮」→ 子「每个模板一个」；点父展开子，点子或系统组查看详情）*@
     <div style="border-top:1px solid #334155;margin:14px 0 4px;"></div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-        <span class="badge-info">@(_autoMode switch { "poll" => "轮询日志", "batch" => "执行日志", _ => "移动任务日志" })</span>
-        @if (_autoMode == "poll")
+        <span class="badge-info">执行日志</span>
+        @if (_autoMode == "move")
         {
-            <button class="btn btn-outline btn-sm" @onclick="ClearAutoLogs" disabled="@Auto.Running">🧹 清空日志</button>
-        }
-        else if (_autoMode == "batch")
-        {
-            <button class="btn btn-outline btn-sm" @onclick="ClearContainerLogs" disabled="@Container.Busy">🧹 清空日志</button>
-        }
-        else
-        {
-            <button class="btn btn-outline btn-sm" @onclick="ClearBatch">🧹 清空日志</button>
+            <span class="hint-text" style="margin:0;">纯移动下发：共 <b style="color:#38bdf8">@_moveTotal</b> 个 ｜ 成功 <b style="color:#4ade80">@_moveOk</b> ｜ 失败 <b style="color:#f87171">@_moveFail</b>（明细见系统日志）</span>
         }
     </div>
-    @if (_autoMode == "poll")
+    <div style="max-height:380px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
+        @foreach (var parent in Hub.Rounds.Where(r => string.IsNullOrEmpty(r.ParentRoundId)))
+        {
+            var children = Hub.Rounds.Where(c => c.ParentRoundId == parent.RoundId).ToList();
+            bool isOpen = _expandedParents.Contains(parent.RoundId);
+            <div class="log-round @(children.Count == 0 ? "log-leaf" : "log-parent")" @onclick="() => OnParentClick(parent)">
+                <span class="log-arrow">@(children.Count == 0 ? "▸" : (isOpen ? "▾" : "▸"))</span>
+                <span class="log-round-title">@parent.Title</span>
+                <span class="log-count">@(children.Count == 0 ? $"{parent.Entries.Count} 条" : $"{children.Count} 个模板")</span>
+            </div>
+            if (isOpen)
+            {
+                @foreach (var child in children)
+                {
+                    <div class="log-round log-child" style="padding-left:24px;" @onclick="() => OpenRound(child.RoundId)">
+                        <span class="log-arrow">·</span>
+                        <span class="log-round-title">@child.Title</span>
+                        <span class="log-count">@child.Entries.Count 条</span>
+                    </div>
+                }
+            }
+        }
+        @if (Hub.Rounds.Count == 0)
+        {
+            <div class="hint-text">暂无日志</div>
+        }
+    </div>
+
+    @if (_openRoundId != null)
     {
-        <div style="max-height:360px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
-            @foreach (var log in Auto.Logs)
-            {
-                <div style="color:@log.Color;">@log.Time @log.Message</div>
-            }
-            @if (Auto.Logs.Count == 0)
-            {
-                <div class="hint-text">暂无日志，点击「启动」开始轮询储位</div>
-            }
+        var openRound = Hub.Rounds.FirstOrDefault(r => r.RoundId == _openRoundId);
+        if (openRound != null)
+        {
+        <div class="log-modal-overlay" @onclick="CloseRound">
+            <div class="log-modal" @onclick:stopPropagation>
+                <div class="log-modal-head">
+                    <span class="log-modal-title">@openRound.Title</span>
+                    @if (openRound.RoundId == "__sys__")
+                    {
+                        <button class="btn btn-outline btn-sm" @onclick="ClearSystemLogs" @onclick:stopPropagation style="margin-right:8px;" title="仅清空系统日志">🧹 清空</button>
+                    }
+                    <button class="log-modal-close" @onclick="CloseRound" title="关闭">✕</button>
+                </div>
+                <div class="log-modal-body">
+                    @foreach (var e in openRound.Entries)
+                    {
+                        <div style="color:@e.Color;white-space:pre-wrap;"><span class="log-time">@e.Time</span> @e.Message</div>
+                    }
+                    @if (openRound.Entries.Count == 0)
+                    {
+                        <div class="hint-text">（无日志）</div>
+                    }
+                </div>
+            </div>
+        </div>
+        }
+    }
+    }
+
+    @if (_confirmVisible)
+    {
+        <div class="template-modal-overlay" @onclick="CancelConfirm">
+            <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">@_confirmTitle</div>
+                    <button class="tpl-modal-close" @onclick="CancelConfirm" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body">
+                    <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_confirmMessage</div>
+                </div>
+                <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                    <button class="btn btn-danger" @onclick="ConfirmAsync">确认</button>
+                    <button class="btn btn-outline" @onclick="CancelConfirm">取消</button>
+                </div>
+            </div>
         </div>
     }
-    else if (_autoMode == "batch")
+    @if (_noticeVisible)
     {
-        <div style="max-height:360px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
-            @foreach (var log in Container.Logs)
-            {
-                <div style="color:@log.Color;">@log.Time @log.Message</div>
-            }
-            @if (Container.Logs.Count == 0)
-            {
-                <div class="hint-text">暂无日志，先「查询库存」再「执行」</div>
-            }
+        <div class="template-modal-overlay" @onclick="CloseNotice">
+            <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">⚠️ 无法启动轮询</div>
+                    <button class="tpl-modal-close" @onclick="CloseNotice" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body">
+                    <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_noticeMessage</div>
+                </div>
+                <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                    <button class="btn btn-primary" @onclick="CloseNotice">知道了</button>
+                </div>
+            </div>
         </div>
-    }
-    else
-    {
-        <div style="max-height:360px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;background:#0b1220;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;">
-            @foreach (var log in _batchLogs)
-            {
-                <div style="color:@log.Color;">@log.Time @log.Message</div>
-            }
-            @if (_batchLogs.Count == 0)
-            {
-                <div class="hint-text">暂无日志，点击「随机生成」生成移动任务</div>
-            }
-        </div>
-    }
     }
 </div>
 
-@* ════════════════════════════════════════════════
-   响应结果：显示最近一次 HTTP 交互的结果与响应 JSON（ShowResp 写入，不持久化）
-   ════════════════════════════════════════════════ *@
 @if (!string.IsNullOrEmpty(_responseText))
 {
     <div class="section-card">
@@ -335,19 +435,22 @@
     //    供按类型筛选候选池与手输站点校验使用）──
     private List<MapStationLite> _mapStations = [];
 
-    // ── 纯移动任务（循环自动下发：每 _batchInterval 秒在选点范围内随机抽站下发 MOVE_ONLY）──
+    // ── 纯移动任务（循环在 MoveLoopService 中运行：跨页面导航存活，离开本页任务继续下发）──
     private int _batchPriority = 50;
     private string _batchOrderIdPrefix = "SimMoveOnly";
     private int _batchInterval = 3;
-    private bool _moveRunning;                       // 循环下发运行中标志
-    private int _moveSeq;                            // OrderId 递增序号（循环下发的唯一性）
-    /// <summary>本标签页唯一 id（跨标签页区分下发发起者，随启停/移动租约请求上传）。
-    /// 取服务端已登记的 id（导航往返不换 id，避免把自己的下发误判成"另一标签页"）。</summary>
+    /// <summary>本标签页唯一 id（模板自动化租约 + 移动循环租约共用）。</summary>
     private string _tabId = "";
-    /// <summary>移动循环取消令牌（页面销毁时中止循环并释放租约，防止租约被孤儿循环永久占用）。</summary>
-    private readonly CancellationTokenSource _moveCts = new();
-    /// <summary>纯移动任务日志（自动下发明细，模式切到「纯移动任务」时展示）。</summary>
-    private readonly List<AutoLogEntry> _batchLogs = [];
+    private bool _moveRunning => MoveLoop.Running;   // 循环运行中（读服务状态）
+    private int _moveTotal => MoveLoop.Total;
+    private int _moveOk => MoveLoop.Ok;
+    private int _moveFail => MoveLoop.Fail;
+
+    // ── 自动化模板编辑状态 ──
+    private string _autoMode = "template";
+    private AutoTemplateDto _editing = NewTemplateObject();
+    private HashSet<string> _selectedIds = new();
+    private int _intervalSec = 3;
 
     // ── 响应 ──
     private string _responseText = "";
@@ -364,71 +467,28 @@
     private Task ToggleRange() => Toggle("range");
     private Task ToggleAutoSection() => Toggle("auto");
 
-    // ── 选点范围（后端 /api/wcs/auto/range：AutomationTasks 遥控，AutoRunHostedService 执行）──
+    // ── 选点范围（后端 /api/wcs/auto/range）──
     private AutoRangeConfig _range = new();
     private string _rangeMarksText = "";
-    /// <summary>本页最近一次已同步到后端的范围配置指纹（用于识别「其他标签页改过」）。</summary>
     private string _rangeFp = "";
-    /// <summary>范围过滤后的候选池（实时预览用）。</summary>
     private List<MapStationLite> _rangePool => _range.ApplyTo(_mapStations);
-    /// <summary>可选楼层：启用站点中符合当前类型过滤的楼层去重排序。</summary>
     private List<int> _rangeAvailableFloors => _mapStations
         .Where(s => s.StaEnable && (_range.TypeFilter == 0 || (s.StationType & _range.TypeFilter) != 0))
         .Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
-
-    // ── 范围内的各类候选站点（与服务 ApplyRange 同口径：StaEnable + 类型位 + 范围过滤）──
     private List<MapStationLite> _rangeStorages => _range.ApplyTo(_mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.StorageLocation) != 0));
     private List<MapStationLite> _rangeTransferPoints => _range.ApplyTo(_mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.TransferPoint) != 0));
     private List<MapStationLite> _rangePickingStations => _range.ApplyTo(_mapStations.Where(s => s.StaEnable && (s.StationType & MapStationTypeBits.PeopleStation) != 0));
 
-    /// <summary>自动容器任务按当前流程缺的必需站点类型（空 = 可正常下发）。</summary>
-    private List<string> ContainerRangeWarnings
-    {
-        get
-        {
-            var w = new List<string>();
-            if (_containerFlow == 1 || _containerFlow == 2)
-            {
-                if (_rangeTransferPoints.Count == 0) w.Add("选点范围内没有接驳位，入库/出库任务无法下发");
-                if (_rangeStorages.Count == 0) w.Add("选点范围内没有储位，无法确定目标货位");
-            }
-            else if (_containerFlow == 3)
-            {
-                if (_rangePickingStations.Count == 0) w.Add("选点范围内没有分拣台，分拣任务无法下发");
-            }
-            return w;
-        }
-    }
-
-    /// <summary>自动化（轮询储位）按当前 FlowMode 缺的必需站点类型（空 = 可正常下发）。</summary>
-    private List<string> AutoRangeWarnings
-    {
-        get
-        {
-            var w = new List<string>();
-            if (_rangeTransferPoints.Count == 0) w.Add("选点范围内没有接驳位，空托入库/带货出库无法下发");
-            if (_rangeStorages.Count == 0) w.Add("选点范围内没有储位，无法确定目标货位");
-            if (Auto.FlowMode != 2 && Auto.FlowMode != 3 && _rangePickingStations.Count == 0) w.Add("选点范围内没有分拣台，分拣流程无法下发");
-            return w;
-        }
-    }
-
-    // ── 跨标签页互斥：其他标签页正在下发 → 本页警示 + 禁止下发操作 ──
-    /// <summary>轮询自动化由其他标签页启动。</summary>
-    private bool OtherTabPollActive => Auto.Running && !string.IsNullOrEmpty(Hub.Status.AutoTabId) && Hub.Status.AutoTabId != _tabId;
-    /// <summary>批量任务由其他标签页发起。</summary>
-    private bool OtherTabBatchActive => Container.Busy && !string.IsNullOrEmpty(Hub.Status.BatchTabId) && Hub.Status.BatchTabId != _tabId;
-    /// <summary>纯移动任务循环由其他标签页持有租约。</summary>
-    private bool OtherTabMoveActive => Hub.Status.MoveRunning && !string.IsNullOrEmpty(Hub.Status.MoveTabId) && Hub.Status.MoveTabId != _tabId;
-    /// <summary>是否有其他标签页正在下发（任一模式）。</summary>
-    private bool OtherTabActive => OtherTabPollActive || OtherTabBatchActive || OtherTabMoveActive;
+    // ── 跨标签页互斥 ──
+    private bool OtherTabPollActive => Hub.Status.Running && !string.IsNullOrEmpty(Hub.Status.AutoTabId) && Hub.Status.AutoTabId != _tabId;
+    private bool OtherTabMoveActive => Hub.Status.MoveRunning && !MoveLoop.Running && !string.IsNullOrEmpty(Hub.Status.MoveTabId) && Hub.Status.MoveTabId != _tabId;
+    private bool OtherTabActive => OtherTabPollActive || OtherTabMoveActive;
     private string OtherTabDesc
     {
         get
         {
             var parts = new List<string>();
-            if (OtherTabPollActive) parts.Add("轮询自动化");
-            if (OtherTabBatchActive) parts.Add("批量任务");
+            if (OtherTabPollActive) parts.Add("自动化模板");
             if (OtherTabMoveActive) parts.Add("纯移动任务");
             return string.Join("、", parts);
         }
@@ -436,11 +496,9 @@
 
     private void ToggleRangeEnabled() { _range.Enabled = !_range.Enabled; SaveRange(); }
     private void ToggleRangeType(int bit) { _range.TypeFilter ^= bit; SaveRange(); }
-    /// <summary>保存选点范围到后端（/api/wcs/auto/range，SQLite 持久化，跨标签页/换浏览器仍在）。</summary>
     private void SaveRange()
     {
         _range.Marks = AutoRangeConfig.ParseMarks(_rangeMarksText);
-        // 同步记录指纹：本页刚写入的值不会被 AutomationHub 回显误判为「其他标签页改过」而覆盖
         _rangeFp = RangeFp(_range.Enabled, _range.TypeFilter, _range.FloorFilter, _range.Marks);
         _ = WcsApi.PutAsync<RangeConfigDto, object>("/api/wcs/auto/range", new RangeConfigDto
         {
@@ -451,7 +509,6 @@
         });
     }
 
-    /// <summary>范围配置指纹：规范化后比较（Mark 大小写不敏感、去重、排序，避免仅顺序差异造成乒乓刷新）。</summary>
     private static string RangeFp(bool enabled, int typeFilter, int floorFilter, IEnumerable<string> marks)
     {
         var m = string.Join(",", marks
@@ -462,147 +519,238 @@
         return $"{enabled}|{typeFilter}|{floorFilter}|{m}";
     }
 
-    /// <summary>AutomationHub 轮询到范围配置变化（其他标签页改过）时，应用回本页并刷新 UI。</summary>
     private void OnHubChanged()
     {
         var r = Hub.Range;
         var fp = RangeFp(r.Enabled, r.TypeFilter, r.FloorFilter, r.Marks);
-        if (fp == _rangeFp) return;
-        _range.Enabled = r.Enabled;
-        _range.TypeFilter = r.TypeFilter;
-        _range.FloorFilter = r.FloorFilter;
-        _range.Marks = r.Marks ?? [];
-        _rangeMarksText = string.Join(", ", _range.Marks);
-        _rangeFp = fp;
+        if (fp != _rangeFp)
+        {
+            _range.Enabled = r.Enabled;
+            _range.TypeFilter = r.TypeFilter;
+            _range.FloorFilter = r.FloorFilter;
+            _range.Marks = r.Marks ?? [];
+            _rangeMarksText = string.Join(", ", _range.Marks);
+            _rangeFp = fp;
+        }
         InvokeAsync(StateHasChanged);
     }
 
-    /// <summary>清空手动指定站点输入框并持久化（等价于不限站点，仅保留类型/楼层过滤）。</summary>
-    private void ClearRangeMarks()
-    {
-        _rangeMarksText = "";
-        SaveRange();
-    }
+    private void ClearRangeMarks() { _rangeMarksText = ""; SaveRange(); }
 
-    /// <summary>
-    /// 打开「站点 XY 散点图 + 框选器」（StationMapPicker，纯 JS 实现）。
-    /// 数据口径：候选集 = 启用站点 + 当前类型过滤 + 楼层（不含 Marks 白名单自身，
-    /// 否则越选越窄）；禁用站点一并传入供置灰展示但不可选。
-    /// 确定 → JS 返回选中 Mark 数组 → 写回 _rangeMarksText 并复用 SaveRange 持久化；
-    /// 取消返回 null 不改动。再次打开时既有 Mark 自动预选中，可增量编辑。
-    /// </summary>
     private async Task OpenStationMapPicker()
     {
-        if (_mapStations.Count == 0)
-        {
-            ShowResp("❌ 请先在「地图信息」页加载地图数据", "error");
-            return;
-        }
-
-        // 候选站点：类型过滤命中的全部站点（含禁用，供 JS 置灰展示）；白名单不参与过滤
+        if (_mapStations.Count == 0) { ShowResp("❌ 请先在「地图信息」页加载地图数据", "error"); return; }
         var stations = _mapStations
             .Where(s => _range.TypeFilter == 0 || (s.StationType & _range.TypeFilter) != 0)
-            .Select(s => new StationMapPickerStation
-            {
-                Mark = s.Mark,
-                StationType = s.StationType,
-                X = s.X,
-                Y = s.Y,
-                Floor = s.Floor,
-                StaEnable = s.StaEnable,
-            })
+            .Select(s => new StationMapPickerStation { Mark = s.Mark, StationType = s.StationType, X = s.X, Y = s.Y, Floor = s.Floor, StaEnable = s.StaEnable })
             .ToList();
         var floors = stations.Where(s => s.StaEnable).Select(s => s.Floor).Distinct().OrderBy(f => f).ToList();
-        if (floors.Count == 0)
-        {
-            ShowResp("❌ 当前类型筛选下没有可用的启用站点", "error");
-            return;
-        }
-        // 范围楼层=全部时默认取最低层，否则取范围楼层（不在候选中时回退最低层）
-        int initialFloor = _range.FloorFilter != 0 && floors.Contains(_range.FloorFilter)
-            ? _range.FloorFilter
-            : floors[0];
-
-        var config = new StationMapPickerConfig
-        {
-            Floors = floors,
-            InitialFloor = initialFloor,
-            Stations = stations,
-            Preselected = _range.Marks,
-        };
-
+        if (floors.Count == 0) { ShowResp("❌ 当前类型筛选下没有可用的启用站点", "error"); return; }
+        int initialFloor = _range.FloorFilter != 0 && floors.Contains(_range.FloorFilter) ? _range.FloorFilter : floors[0];
+        var config = new StationMapPickerConfig { Floors = floors, InitialFloor = initialFloor, Stations = stations, Preselected = _range.Marks };
         try
         {
             var result = await Js.InvokeAsync<string?>("grcsStationMapPickerOpen", JsonSerializer.Serialize(config));
-            if (result == null) return; // 用户取消，不改动
+            if (result == null) return;
             var marks = JsonSerializer.Deserialize<List<string>>(result, JsonOpts) ?? [];
             _rangeMarksText = string.Join(", ", marks);
             SaveRange();
         }
-        catch (Exception ex)
-        {
-            ShowResp($"❌ 地图框选失败：{ex.Message}", "error");
-        }
+        catch (Exception ex) { ShowResp($"❌ 地图框选失败：{ex.Message}", "error"); }
     }
 
-    // ── 自动化（运行状态/日志在 AutoRunService 单例中，跨导航存活；页面只订阅刷新。
-    //    服务内部定时器自己管理生命周期，页面销毁时退订 Changed 事件即可）──
-    /// <summary>合并卡片模式：poll=轮询自动化，batch=批量任务。</summary>
-    private string _autoMode = "poll";
-    private void OnAutoChanged() => InvokeAsync(StateHasChanged);
-    private void OnContainerChanged() => InvokeAsync(StateHasChanged);
-    /// <summary>退订两个后台服务的状态变化事件，避免组件销毁后回调泄漏；中止移动循环并释放租约。</summary>
+    /// <summary>页面销毁：仅退订事件。移动循环由 MoveLoopService 持有，离开页面任务继续下发。</summary>
     public void Dispose()
     {
-        if (_moveRunning)
+        Hub.Changed -= OnHubChanged;
+        MoveLoop.Changed -= OnMoveLoopChanged;
+    }
+
+    private void OnMoveLoopChanged() => InvokeAsync(StateHasChanged);
+
+    // ── 自动化模板 ──
+    private static AutoTemplateDto NewTemplateObject() => new()
+    {
+        Id = "",
+        Name = "",
+        Steps = [new AutoStepDto { Kind = "PickPallet", PalletFilter = "Empty", Label = "" }],
+    };
+
+    private bool _editorOpen = false;
+    private void NewTemplate() { _editing = NewTemplateObject(); _editorOpen = true; }
+    private void CloseEditor() { _editorOpen = false; }
+
+    // ── 二次确认弹窗（删除模板 / 强制结束）──
+    private bool _confirmVisible;
+    private string _confirmTitle = "";
+    private string _confirmMessage = "";
+    private Func<Task>? _confirmAction;
+    private void ShowConfirm(string title, string message, Func<Task> action) { _confirmTitle = title; _confirmMessage = message; _confirmAction = action; _confirmVisible = true; }
+    private void CancelConfirm() { _confirmVisible = false; _confirmAction = null; }
+    private async Task ConfirmAsync() { var act = _confirmAction; _confirmVisible = false; _confirmAction = null; if (act != null) await act(); }
+
+    private bool _noticeVisible;
+    private string _noticeMessage = "";
+    private void ShowNotice(string message) { _noticeMessage = message; _noticeVisible = true; }
+    private void CloseNotice() { _noticeVisible = false; }
+    private class StartResultDto { public bool Success { get; set; } public string Message { get; set; } = ""; }
+    private void RequestDeleteTemplate() => ShowConfirm("确认删除", $"是否确认删除模板「{_editing.Name}」？", DeleteTemplate);
+    private void RequestForceStop() => ShowConfirm("确认全部重置", "是否确认全部重置当前自动化？所有进行中的任务将不再等待完成并释放占用与站点锁，日志将被清空，重启后不会自动恢复。", ForceStop);
+
+    private void ToggleSelect(string id)
+    {
+        if (_selectedIds.Contains(id)) _selectedIds.Remove(id);
+        else _selectedIds.Add(id);
+    }
+
+    private void OpenEditor(string id)
+    {
+        var t = Hub.Status.Templates.FirstOrDefault(x => x.Id == id);
+        _editing = t == null ? NewTemplateObject() : Clone(t);
+        _editorOpen = true;
+    }
+
+    private static AutoTemplateDto Clone(AutoTemplateDto src) => new()
+    {
+        Id = src.Id,
+        Name = src.Name,
+        Steps = src.Steps.Select(s => new AutoStepDto { Kind = s.Kind, PalletFilter = s.PalletFilter, TemplateValue = s.TemplateValue, Label = s.Label, WaitForFinish = s.WaitForFinish, UsePickedContainer = s.UsePickedContainer, UsePickedStart = s.UsePickedStart }).ToList(),
+    };
+
+    private void AddStep() => _editing.Steps.Add(new AutoStepDto { Kind = "PickPallet", PalletFilter = "Empty" });
+    private void RemoveStep(int i) { if (i >= 0 && i < _editing.Steps.Count) _editing.Steps.RemoveAt(i); }
+    private void MoveStep(int i, int dir)
+    {
+        var j = i + dir;
+        if (j < 0 || j >= _editing.Steps.Count) return;
+        (_editing.Steps[i], _editing.Steps[j]) = (_editing.Steps[j], _editing.Steps[i]);
+    }
+
+    private string StepLabel(AutoStepDto s) => s.Kind switch
+    {
+        "PickPallet" => "选托盘(" + (s.PalletFilter == "Loaded" ? "带货托" : s.PalletFilter == "Any" ? "任意" : "空托") + ")",
+        "PickLoadedPallet" => "选带货托",
+        "PickCargo" => "选货物",
+        "RunTemplate" => "执行:" + (TaskTypeRegistry.All.FirstOrDefault(t => t.Value == s.TemplateValue)?.Label ?? (string.IsNullOrEmpty(s.TemplateValue) ? "未选" : s.TemplateValue)),
+        _ => s.Kind,
+    };
+
+    private async Task SaveTemplate()
+    {
+        if (string.IsNullOrWhiteSpace(_editing.Id)) _editing.Id = "T_" + Guid.NewGuid().ToString("N")[..10];
+        if (string.IsNullOrWhiteSpace(_editing.Name)) _editing.Name = "未命名模板";
+        var list = Hub.Status.Templates.ToList();
+        var idx = list.FindIndex(t => t.Id == _editing.Id);
+        var clone = Clone(_editing);
+        if (idx >= 0) list[idx] = clone; else list.Add(clone);
+        var (ok, code, json) = await WcsApi.PutWithStatusAsync("/api/wcs/auto/templates", list);
+        if (!ok)
         {
-            _moveRunning = false;
-            _moveCts.Cancel();
-            _ = WcsApi.PostAsync("/api/wcs/auto/move/stop", new { tabId = _tabId });
+            var msg = "❌ 模板保存被拒绝";
+            try
+            {
+                var err = JsonSerializer.Deserialize<SaveValidationResult>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (err?.Errors?.Count > 0) msg = "❌ 保存被拒绝：\n" + string.Join("\n", err.Errors);
+            }
+            catch { }
+            ShowResp(msg, "error");
+            return;
         }
-        _moveCts.Dispose();
-        Auto.Changed -= OnAutoChanged; Container.Changed -= OnContainerChanged; Hub.Changed -= OnHubChanged;
+        _selectedIds.Add(_editing.Id);
+        ShowResp($"✅ 模板「{_editing.Name}」已保存（共 {list.Count} 个）", "success");
+        _editorOpen = false;
     }
-    private Task ToggleAuto() => Auto.ToggleAsync();
-    private void ClearAutoLogs() => Auto.ClearLogs();
 
-    // ── 自动容器任务（用户输入参数；执行状态托管到 ContainerTaskService）──
-    private int _containerFlow = 1;
-    private int _containerCount = 1;
-    private int _containerInterval = 3;
-
-    /// <summary>查询 GRCS 库存并缓存到 ContainerTaskService（空托/带货托/货物/任务可用货物计数）。</summary>
-    private async Task RefreshContainerInventory()
+    private class SaveValidationResult
     {
-        await Container.RefreshInventoryAsync();
+        public bool Success { get; set; }
+        public List<string>? Errors { get; set; }
     }
 
-    private void ClearContainerLogs() => Container.ClearLogs();
-
-    /// <summary>触发 ContainerTaskService 按所选流程执行两段式容器任务，结果回显到响应面板。</summary>
-    private async Task ExecuteContainerAuto()
+    private async Task DeleteTemplate()
     {
-        var result = await Container.ExecuteAsync(_containerFlow, _containerCount, _containerInterval);
-        ShowResp(result, result.StartsWith("✅") ? "success" : "error");
+        if (string.IsNullOrEmpty(_editing.Id)) return;
+        await WcsApi.DeleteAsync("/api/wcs/auto/templates?id=" + Uri.EscapeDataString(_editing.Id));
+        _selectedIds.Remove(_editing.Id);
+        NewTemplate();
+        ShowResp("🗑 已删除模板", "success");
+        _editorOpen = false;
     }
 
+    private async Task TogglePoll()
+    {
+        if (Hub.Status.Running)
+        {
+            await WcsApi.PostAsync("/api/wcs/auto/stop", new { });
+        }
+        else
+        {
+            if (_selectedIds.Count == 0) return;
+            await WcsApi.PostAsync("/api/wcs/auto/interval", new { interval = _intervalSec });
+            var r = await WcsApi.PostAsync<object, StartResultDto>("/api/wcs/auto/start", new { tabId = _tabId, templateIds = _selectedIds.ToList() });
+            if (r == null || !r.Success)
+                ShowNotice(r?.Message ?? "启动轮询失败，请查看自动化日志");
+            else
+                await Hub.RefreshNowAsync();
+        }
+    }
+
+    private async Task ForceStop()
+    {
+        await WcsApi.PostAsync("/api/wcs/auto/force-stop", new { });
+        await Hub.RefreshNowAsync();
+    }
+
+    private void ClearLogs() => Hub.ClearLogs();
+
+    private async Task ClearSystemLogs()
+    {
+        await WcsApi.DeleteAsync("/api/wcs/auto/logs/system");
+        await Hub.RefreshNowAsync();
+        _openRoundId = null;
+        StateHasChanged();
+    }
+
+    // 库存分类汇总（纯空托 / 带货托 / 纯货物），点「查库存」按钮拉取
+    private InventorySummaryDto? _invSummary;
+    private bool _invLoading;
+    private async Task QueryInventorySummary()
+    {
+        _invLoading = true; StateHasChanged();
+        try { _invSummary = await WcsApi.GetAsync<InventorySummaryDto>("/api/wcs/auto/inventory-summary"); }
+        catch { _invSummary = null; }
+        finally { _invLoading = false; StateHasChanged(); }
+    }
+    private HashSet<string> _expanded = new() { "__sys__" };
+
+    private void ToggleRound(string id)
+    {
+        if (_expanded.Contains(id)) _expanded.Remove(id);
+        else _expanded.Add(id);
+    }
+
+    private string? _openRoundId;
+    private void OpenRound(string id) { _openRoundId = id; StateHasChanged(); }
+    private void CloseRound() { _openRoundId = null; StateHasChanged(); }
+
+    private HashSet<string> _expandedParents = new();
+    private void OnParentClick(LogRoundDto parent)
+    {
+        var children = Hub.Rounds.Where(c => c.ParentRoundId == parent.RoundId).ToList();
+        if (children.Count == 0) { OpenRound(parent.RoundId); return; }
+        if (_expandedParents.Contains(parent.RoundId)) _expandedParents.Remove(parent.RoundId);
+        else _expandedParents.Add(parent.RoundId);
+        StateHasChanged();
+    }
 
     private static readonly JsonSerializerOptions JsonOpts = new() { PropertyNameCaseInsensitive = true };
 
     protected override async Task OnInitializedAsync()
     {
-        // 订阅两个后台服务的状态变化事件：服务状态在单例内变化时通知本页重绘，
-        // 页面销毁时在 Dispose 退订，防止泄漏
-        Auto.Changed += OnAutoChanged;     // 订阅自动化状态变化（页面销毁时在 Dispose 退订）
-        Container.Changed += OnContainerChanged; // 订阅容器任务状态变化
-        // 本标签页唯一 id：优先复用服务上已登记的（导航往返不换），再交给两个遥控壳随请求上传
-        _tabId = string.IsNullOrEmpty(Auto.TabId) ? Guid.NewGuid().ToString("N") : Auto.TabId;
-        Auto.TabId = _tabId;
-        Container.TabId = _tabId;
+        _tabId = Guid.NewGuid().ToString("N");
 
         try
         {
-            // 地图站点：单一数据源在后端（/api/wcs/map，地图信息页解析成功后上传）
             var cache = await WcsApi.GetAsync<MapCacheDto>("/api/wcs/map");
             _mapStations = cache?.Stations ?? [];
         }
@@ -616,7 +764,6 @@
         }
         catch { }
 
-        // 选点范围配置恢复（后端 /api/wcs/auto/range，SQLite 持久化）
         try
         {
             var range = await WcsApi.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
@@ -632,124 +779,41 @@
         }
         catch { }
 
-        // 订阅共享轮询中枢：其他标签页改动选点范围（开启/关闭限制、类型/楼层/Mark）时回写本页
         Hub.Changed += OnHubChanged;
+        MoveLoop.Changed += OnMoveLoopChanged;
     }
 
-    /// <summary>
-    /// 纯移动任务候选池：启用站点 + 选点范围约束（类型/楼层/Mark 白名单，与轮询/批量同口径）。
-    /// 范围未开启 = 全图启用站点。不再单独选类型/楼层（由选点范围卡片统一管控）。
-    /// </summary>
     private List<MapStationLite> _batchPool => _range.ApplyTo(_mapStations.Where(s => s.StaEnable));
 
-    private void ClearBatch()
-    {
-        _batchLogs.Clear();
-        StateHasChanged();
-    }
-
-    /// <summary>
-    /// 纯移动任务循环下发开关：开始后每 _batchInterval 秒在「选点范围」候选池内
-    /// 随机抽 1 个站点下发 MOVE_ONLY 任务（ChangeFloor，自动分配车辆），直到手动停止。
-    /// 开始前向后端登记互斥租约（任何下发进行中则拒绝，其他标签页同步被禁）。
-    /// </summary>
     private async Task ToggleMoveDispatch()
     {
         if (_moveRunning)
         {
-            _moveRunning = false;
-            _ = WcsApi.PostAsync("/api/wcs/auto/move/stop", new { tabId = _tabId });
-            _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "⏹ 正在停止自动下发...", Color = "#fbbf24" });
+            MoveLoop.Stop();
             StateHasChanged();
             return;
         }
-        if (string.IsNullOrEmpty(SceneName)) { _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 未配置场景名称（地图信息页系统设置）", Color = "#f87171" }); StateHasChanged(); return; }
+        if (string.IsNullOrEmpty(SceneName)) { ShowResp("❌ 未配置场景名称（地图信息页系统设置）", "error"); return; }
         var pool = _batchPool;
-        if (pool.Count == 0) { _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 候选站点池为空（请检查「选点范围」），无法开始", Color = "#f87171" }); StateHasChanged(); return; }
+        if (pool.Count == 0) { ShowResp("❌ 候选站点池为空（请检查「选点范围」），无法开始", "error"); return; }
 
-        // 后端互斥登记：未启用（无任何下发进行中）才可下发，并置为启用；被拒则提示
-        var lease = await WcsApi.PostAsync<object, MoveLeaseResult>("/api/wcs/auto/move/start", new { tabId = _tabId });
-        if (lease is not { Success: true })
+        var (ok, reason) = await MoveLoop.StartAsync(new GRCS.Dashboard.Modules.WcsSimulator.Services.MoveLoopService.Options
         {
-            _batchLogs.Add(new AutoLogEntry
-            {
-                Time = DateTime.Now.ToString("HH:mm:ss"),
-                Message = "❌ 无法开始移动下发：" + (lease?.Reason ?? "后端拒绝（互斥：轮询或批量或另一标签页正在下发）"),
-                Color = "#f87171"
-            });
-            StateHasChanged();
+            TabId = _tabId,
+            SceneName = SceneName,
+            OrderIdPrefix = _batchOrderIdPrefix,
+            Priority = _batchPriority,
+            Interval = _batchInterval,
+            Pool = pool,
+            RangeEnabled = _range.Enabled,
+        });
+        if (!ok)
+        {
+            ShowResp("❌ 无法开始移动下发：" + (reason ?? "后端拒绝（互斥：自动化模板或另一标签页正在下发）"), "error");
             return;
         }
-
-        _moveRunning = true;
-        _moveSeq = 0;
-        _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = $"▶ 开始自动下发：每 {_batchInterval} 秒随机下发 1 个纯移动任务（候选池 {pool.Count} 个，选点范围{(_range.Enabled ? "已开启" : "未开启=全图")}）", Color = "#60a5fa" });
-        StateHasChanged();
-        _ = MoveDispatchLoopAsync();
-        _ = MoveHeartbeatAsync();
-    }
-
-    /// <summary>移动循环属主心跳：每 5s 续约一次，防止本标签页被关闭后租约永久占用其他页。</summary>
-    private async Task MoveHeartbeatAsync()
-    {
-        while (_moveRunning && !_moveCts.IsCancellationRequested)
-        {
-            try { await Task.Delay(5000, _moveCts.Token); } catch { return; }
-            if (!_moveRunning) break;
-            _ = WcsApi.PostAsync("/api/wcs/auto/move/beat", new { tabId = _tabId });
-        }
-    }
-
-    private async Task MoveDispatchLoopAsync()
-    {
-        while (_moveRunning && !_moveCts.IsCancellationRequested)
-        {
-            var pool = _batchPool;
-            if (pool.Count == 0)
-            {
-                _moveRunning = false;
-                _ = WcsApi.PostAsync("/api/wcs/auto/move/stop", new { tabId = _tabId });
-                _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "❌ 候选站点池为空（请检查「选点范围」），自动下发已停止", Color = "#f87171" });
-                StateHasChanged();
-                return;
-            }
-
-            var st = pool[Random.Shared.Next(pool.Count)];
-            var payload = new VehicleOrderRequest
-            {
-                CreateTime = DateTime.Now,
-                SceneName = SceneName,
-                OrderType = "MOVE_ONLY",
-                OrderId = $"{_batchOrderIdPrefix}_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper()}_{++_moveSeq}",
-                OrderName = "wcs模拟器纯移动任务",
-                VehicleName = null,
-                Priority = _batchPriority,
-                StationCodes = [st.Mark],
-            };
-
-            var resp = await WcsApi.PostAsync<object, MoveDispatchResult>("/api/wcs/auto/move/dispatch", payload);
-            var ok = resp?.Success == true;
-            var code = resp?.Code ?? 0;
-            var json = resp?.Json ?? "";
-            _batchLogs.Add(new AutoLogEntry
-            {
-                Time = DateTime.Now.ToString("HH:mm:ss"),
-                Message = (ok ? "✓ " : "❌ ") + $"#{_moveSeq:000}  {st.Mark}  [{TypeLabel(st.StationType)}]  " + (ok ? "下发成功" : $"下发失败 HTTP {code}"),
-                Color = ok ? "#4ade80" : "#f87171"
-            });
-            StateHasChanged();
-
-            if (!_moveRunning) break;
-            try { await Task.Delay(_batchInterval * 1000, _moveCts.Token); } catch { break; }
-        }
-        _moveRunning = false;
-        _batchLogs.Add(new AutoLogEntry { Time = DateTime.Now.ToString("HH:mm:ss"), Message = "⏹ 自动下发已停止", Color = "#fbbf24" });
         StateHasChanged();
     }
 
-    /// <summary>站点类型位掩码 → 中文类型名（多类型用 + 连接；0=手输站点无类型）。</summary>
-    private static string TypeLabel(int t) => t == 0 ? "手输" : string.Join("+", MapStationTypeBits.DecodeNames(t));
-
-    /// <summary>把最近一次 HTTP 交互结果写入响应面板。</summary>
     private void ShowResp(string msg, string cls) { _responseText = msg; _respClass = cls; }
 }

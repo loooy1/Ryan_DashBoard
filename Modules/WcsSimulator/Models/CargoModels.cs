@@ -36,7 +36,7 @@ public class CargoInventoryItem
     /// <summary>
     /// 容器编码（= WCS 下发的 ContainerCode）。
     /// 命名约定：Container* = 托盘，Cargo* = 货物——GRCS 没有独立的类型字段，
-    /// 托盘/货物识别全靠此前缀（见 CargoInventoryExtensions.IsPallet/IsCargo）。
+    /// 托盘/货物识别全靠此前缀（库存分类逻辑见 AutoTemplateRunner / InventorySummary）。
     /// </summary>
     public string? Code { get; set; }
 

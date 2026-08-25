@@ -1,20 +1,38 @@
 @page "/wcs-simulator/signal-interaction"
-@inject IWcsService WcsService
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
-@inject SignalAutoService SignalAuto
-@inject TaskLedgerService Ledger
-@inject TaskStageHub StageHub
-@inject AutomationHub AutoHub
-@inject WcsApiClient WcsApi
-@inject BackendHealthService Health
+@inject WcsApiClient Api
 @implements IDisposable
 
+@* ════════════════════════════════════════════════
+     页面职责：WCS 模拟器的「信号交互」页 —— 功能模板 + 通用 Mock 入站 + 请求审批 + 模块执行记录。
+    ── 数据流 ──
+    ① 功能模板：本页创建/编辑/删除【功能模块】（自定义名称 + API 地址 + 参数(值来源)），
+       持久化到后端 feature_modules 表（跨浏览器共享）+ localStorage 兜底；
+       任务模板在「任务下发」页给起点/起点之后/终点各自关联若干模块。
+    ② 通用 Mock 入站：任意 RCS→WCS 回调按 URL+参数命中卡片返回自定义 JSON；
+       勾选「关联任务看板」的卡片为任务阶段卡，命中时自动推送任务看板。
+    ③ 请求信号：命中“需审批”卡片的请求在此逐条批准/拒绝（批准/拒绝后按卡片审批变量回写）。
+    ④ 模块执行记录：由后端统一执行器（ModuleRunService + FinishedModuleWatcher）写入，
+       本页轮询 GET /api/wcs/modules/logs 展示。
+    ════════════════════════════════════════════════ *@
 <PageTitle>信号交互</PageTitle>
 
-@* ════════════════════════════════════════════════
-   提示：WCS 后端地址/GRCS 地址/场景名在「地图信息」页系统设置配置
-   ════════════════════════════════════════════════ *@
+<style>
+    .switch { position: relative; width: 40px; height: 22px; flex: none; display: inline-block; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; inset: 0; background: #334155; border-radius: 22px; transition: .2s; cursor: pointer; border: 1px solid #475569; }
+    .slider:before { content: ""; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: #94a3b8; border-radius: 50%; transition: .2s; }
+    .switch input:checked + .slider { background: #3b82f6; border-color: #3b82f6; }
+    .switch input:checked + .slider:before { transform: translateX(18px); background: #fff; }
+    .option-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid #1e293b; border-radius: 8px; background: #0f172a; margin-bottom: 8px; }
+    .option-row .option-title { font-weight: 600; color: #e2e8f0; font-size: 0.85rem; }
+    .option-row .option-desc { color: #64748b; font-size: 0.75rem; margin-top: 2px; }
+    .form-section-title { margin: 14px 0 8px; padding: 5px 10px; background: linear-gradient(90deg, rgba(59,130,246,.12), transparent); border-left: 3px solid #3b82f6; border-radius: 4px; color: #93c5fd; font-weight: 600; font-size: 0.8rem; letter-spacing: .5px; }
+    .mod-card { transition: transform .15s, box-shadow .15s; }
+    .mod-card:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+</style>
+
 <div class="hint-text" style="margin:0 0 12px;">
     WCS 后端地址与 GRCS 地址/场景名在「地图信息」页系统设置配置，本页自动读取。
 </div>
@@ -22,561 +40,444 @@
 <div class="section-card">
     <div class="section-header collapsible" @onclick="ToggleSignalSection" title="点击折叠/展开">
         🎛 信号交互
-        <span class="hint-text" style="margin:0;">选择类型查看对应信号，卡片网格随数据实时刷新</span>
+        <span class="hint-text" style="margin:0;">功能模板 + Mock 入站</span>
         <span class="collapse-arrow">@(_panelCollapsed ? "▸ 展开" : "▾ 收起")</span>
     </div>
     @if (!_panelCollapsed)
     {
 
-    @* ── 第一行：四个类型卡片，点击切换下方公用展示区 ── *@
-    <div class="si-type-grid">
-        <button class="si-type-card @(_activeSection == "adm" ? "on" : "")" @onclick='() => SetSection("adm")'>
-            <div class="si-type-head">
-                <span class="si-type-icon">🚦</span>
-                <span class="si-type-name">进入申请</span>
-                <span class="badge @(AutoHub.AdmittanceAutoMode ? "badge-ok" : "badge-warn") si-type-mode">@(AutoHub.AdmittanceAutoMode ? "自动" : "手动")</span>
-            </div>
-            <div class="si-type-badges">
-                <span class="badge @(_pendingCount == 0 ? "badge-ok" : "badge-warn")">待确认 @_pendingCount</span>
-                <span class="badge badge-ok">已确认 @_admHandledCount</span>
-            </div>
-        </button>
-        <button class="si-type-card @(_activeSection == "arrival" ? "on" : "")" @onclick='() => SetSection("arrival")'>
-            <div class="si-type-head">
-                <span class="si-type-icon">📦</span>
-                <span class="si-type-name">货物到达</span>
-                <span class="badge @(SignalAuto.ArrivalAuto ? "badge-ok" : "badge-warn") si-type-mode">@(SignalAuto.ArrivalAuto ? "自动" : "手动")</span>
-            </div>
-            <div class="si-type-badges">
-                <span class="badge @(_pendingArrival == 0 ? "badge-ok" : "badge-warn")">待确认 @_pendingArrival</span>
-                <span class="badge badge-ok">已确认 @_arrivalCards.Count(c => c.Confirmed)</span>
-            </div>
-        </button>
-        <button class="si-type-card @(_activeSection == "removal" ? "on" : "")" @onclick='() => SetSection("removal")'>
-            <div class="si-type-head">
-                <span class="si-type-icon">📤</span>
-                <span class="si-type-name">货物移除</span>
-                <span class="badge @(SignalAuto.RemovalAuto ? "badge-ok" : "badge-warn") si-type-mode">@(SignalAuto.RemovalAuto ? "自动" : "手动")</span>
-            </div>
-            <div class="si-type-badges">
-                <span class="badge @(_pendingRemoval == 0 ? "badge-ok" : "badge-warn")">待确认 @_pendingRemoval</span>
-                <span class="badge badge-ok">已确认 @_removalCards.Count(c => c.Confirmed)</span>
-            </div>
-        </button>
-        <button class="si-type-card @(_activeSection == "sorting" ? "on" : "")" @onclick='() => SetSection("sorting")'>
-            <div class="si-type-head">
-                <span class="si-type-icon">🎯</span>
-                <span class="si-type-name">分拣信号</span>
-                <span class="badge @(SignalAuto.AutoSend ? "badge-ok" : "badge-warn") si-type-mode">@(SignalAuto.AutoSend ? "自动" : "手动")</span>
-            </div>
-            <div class="si-type-badges">
-                <span class="badge @(_pendingSorting == 0 ? "badge-ok" : "badge-warn")">待确认 @_pendingSorting</span>
-                <span class="badge badge-ok">已确认 @_cards.Count(c => c.Status == "Sent")</span>
-            </div>
-        </button>
+    @* ── 请求信号（通用 Mock 审批）：所有 RCS→WCS 请求经 Mock 命中需审批时在此逐条处理 ── *@
+    <div class="sub-header">
+        📥 请求信号
+        <span class="hint-text" style="margin:0;">所有 RCS→WCS 请求经通用 Mock 命中需审批时，在此逐条批准/拒绝</span>
+        <button class="btn btn-outline btn-xs" @onclick="() => LoadMockApprovals()" style="margin-left:auto;">刷新</button>
+        <button class="btn btn-outline btn-xs" @onclick="ClearMockApprovals">清空</button>
     </div>
-
-    <div style="min-height:280px;">
-    @switch (_activeSection)
+    @if (_mockApprovals.Count == 0)
     {
-        case "adm":
+        <div class="hint-text">暂无待审批请求。RCS 调任意 URL（如 <code>POST /api/v1/station_entry_request</code>）命中“需审批”的通用 Mock 卡片时，会在此生成一条审批任务；批准/拒绝后按卡片的“审批变量/批准值/拒绝值”回写响应。一次进站一审批：批准后本次进站放行（卡片保留为“已放行”并自动更换内部 ID），同车同站下次进站会重新弹卡审批；未审批前的重试归并同一张卡片（Attempts 累加）。</div>
+    }
+    else
+    {
+        @if (_mockApprovals.Count > 0)
         {
-            <div class="tab-toolbar">
-                <button class="btn @(AutoHub.AdmittanceAutoMode ? "btn-outline" : "btn-primary") btn-xs"
-                        @onclick="ToggleMode" disabled="@_busy">@(AutoHub.AdmittanceAutoMode ? "切换手动" : "切换自动")</button>
-                <button class="btn btn-outline btn-sm" @onclick='() => RefreshAdmittanceNow()' disabled="@_busy">🔄 刷新</button>
-                <span class="refresh-ok">@_admRefreshMsg</span>
-                <span style="flex:1;"></span>
-                @if (_admConfirming)
-                {
-                    <button class="btn btn-danger btn-sm" @onclick="ClearAllEntries">确认</button>
-                    <button class="btn btn-outline btn-sm" @onclick='() => _admConfirming = false'>取消</button>
-                }
-                else
-                {
-                    <button class="btn btn-danger btn-sm" @onclick='() => _admConfirming = true'>🗑 清空全部</button>
-                }
-                <span class="clear-ok">@_admClearMsg</span>
-            </div>
-            @if (!_pollingOk)
-            {
-                <div class="hint-text" style="color:#f87171;margin:8px 0;">⚠ 无法连接 WCS 后端，请确认 GrcsBackend 已启动。@_lastError</div>
-            }
-            @if (_events.Count == 0)
-            {
-                <div class="hint-text" style="margin:8px 0;">暂无申请事件。GRCS 发出 station_entry_request 后会在这里出现。</div>
-            }
-            else
-            {
-            <table class="entry-table">
-                <thead><tr><th>车辆</th><th>站点</th><th>载货</th><th>申请时间</th><th>下发时间</th><th>请求次数</th><th>状态</th><th>操作</th></tr></thead>
+            <table class="entry-table" style="table-layout:fixed;">
+                <thead><tr><th style="width:6%;">ID</th><th style="width:10%;">时间</th><th style="width:7%;">方法</th><th style="width:18%;">路径</th><th style="width:17%;">描述</th><th style="width:12%;">状态</th><th style="width:11%;">次数</th><th style="width:19%;">操作</th></tr></thead>
                 <tbody>
-                    @foreach (var e in _events)
-                    {
-                        var isPending = e.Status == "Pending";
-                        <tr>
-                            <td><span class="entry-vehicle">🚗 @e.VehicleCode</span></td>
-                            <td>@e.StationCode</td>
-                            <td>@(e.IsLoaded ? "载货" : "空车")</td>
-                            <td>@e.Time.ToString("HH:mm:ss")</td>
-                            <td>@(e.DecidedAt?.ToString("HH:mm:ss") ?? "—")</td>
-                            <td>@(e.Attempts > 0 ? $"{e.Attempts} 次" : "")</td>
-                            <td><span class="badge @(StatusBadgeClass(e.Status))">@StatusLabel(e.Status)</span></td>
-                            <td style="display:flex;gap:4px;align-items:center;">@if (isPending) {<button class="btn btn-primary btn-xs" @onclick="() => Decide(e.Key, true)" disabled="@_busy">批准</button><button class="btn btn-danger btn-xs" @onclick="() => Decide(e.Key, false)" disabled="@_busy">拒绝</button>} else {<span class="hint-text">@(e.Status == "Allowed" ? "已放行" : e.Status == "Approved" ? "等待领取" : "已拒绝")</span>}<button class="btn btn-danger btn-xs" @onclick="() => DeleteEntry(e.Key)" @onclick:stopPropagation style="margin-left:4px;">✕</button></td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-            }
-            break;
-        }
-
-        case "arrival":
-        {
-            <div class="tab-toolbar">
-                <button class="btn @(SignalAuto.ArrivalAuto ? "btn-outline" : "btn-primary") btn-xs"
-                        @onclick="ToggleArrivalMode" disabled="@_arrivalBusy">@(SignalAuto.ArrivalAuto ? "切换手动" : "切换自动")</button>
-                <button class="btn btn-outline btn-sm" @onclick='() => RefreshArrivalsNow()' disabled="@_arrivalBusy">🔄 刷新</button>
-                <span class="refresh-ok">@_arrivalRefreshMsg</span>
-                <span style="flex:1;"></span>
-                @if (_arrivalConfirming)
+                @foreach (var e in _mockApprovals.OrderByDescending(x => x.Time))
                 {
-                    <button class="btn btn-danger btn-sm" @onclick="ClearAllArrivals">确认</button>
-                    <button class="btn btn-outline btn-sm" @onclick='() => _arrivalConfirming = false'>取消</button>
-                }
-                else
-                {
-                    <button class="btn btn-danger btn-sm" @onclick='() => _arrivalConfirming = true'>🗑 清空全部</button>
-                }
-                <span class="clear-ok">@_arrivalClearMsg</span>
-            </div>
-            @if (_cardError != "") { <div class="hint-text" style="color:#f87171;margin:8px 0;">⚠ 卡片加载异常：@_cardError</div> }
-            @if (_arrivalCards.Count == 0)
-            {
-                <div class="hint-text">暂无</div>
-            }
-            else
-            {
-            <table class="entry-table"><thead><tr><th>输送线</th><th>任务号</th><th>容器</th><th>仓库</th><th>申请时间</th><th>下发时间</th><th>操作</th><th>删除</th></tr></thead><tbody>
-            @foreach (var c in _arrivalCards)
-            {
-                <tr>
-                    <td><span class="entry-vehicle">🏭 @c.ConveyorCode</span></td>
-                    <td>@c.TaskId</td>
-                    <td>@c.ContainerCode</td>
-                    <td>@c.Warehouse</td>
-                    <td>@(c.AppliedAt?.ToString("HH:mm:ss") ?? "—")</td>
-                    <td>@(c.SendAt?.ToString("HH:mm:ss") ?? "—")</td>
-                    <td>@if (!c.Confirmed) {<button class="btn btn-primary btn-xs" @onclick="() => ConfirmArrival(c)" disabled="@_arrivalBusy">确认</button>} else {<span class="badge badge-ok">已确认</span>}</td>
-                    <td><button class="btn btn-danger btn-xs" @onclick="() => DeleteArrival(c)" @onclick:stopPropagation>✕</button></td>
-                </tr>
-            }
-            </tbody></table>
-            }
-            @if (_deletedArrivalTasks.Count > 0)
-            {
-                <div class="hint-text" style="margin:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                    <span>🗑 已删除</span>
-                    <button class="btn btn-outline btn-xs" @onclick="RestoreAllArrivals">恢复全部</button>
-                    @foreach (var id in _deletedArrivalTasks)
-                    {
-                        <span style="display:inline-flex;align-items:center;gap:4px;">
-                            <code>@id</code>
-                            <button class="btn btn-outline btn-xs" @onclick="() => RestoreArrival(id)">恢复</button>
-                        </span>
-                    }
-                </div>
-            }
-            break;
-        }
-
-        case "removal":
-        {
-            <div class="tab-toolbar">
-                <button class="btn @(SignalAuto.RemovalAuto ? "btn-outline" : "btn-primary") btn-xs"
-                        @onclick="ToggleRemovalMode" disabled="@_removalBusy">@(SignalAuto.RemovalAuto ? "切换手动" : "切换自动")</button>
-                <button class="btn btn-outline btn-sm" @onclick='() => RefreshRemovalsNow()' disabled="@_removalBusy">🔄 刷新</button>
-                <span class="refresh-ok">@_removalRefreshMsg</span>
-                <span style="flex:1;"></span>
-                @if (_removalConfirming)
-                {
-                    <button class="btn btn-danger btn-sm" @onclick="ClearAllRemovals">确认</button>
-                    <button class="btn btn-outline btn-sm" @onclick='() => _removalConfirming = false'>取消</button>
-                }
-                else
-                {
-                    <button class="btn btn-danger btn-sm" @onclick='() => _removalConfirming = true'>🗑 清空全部</button>
-                }
-                <span class="clear-ok">@_removalClearMsg</span>
-            </div>
-            @if (_cardError != "") { <div class="hint-text" style="color:#f87171;margin:8px 0;">⚠ 卡片加载异常：@_cardError</div> }
-            @if (_removalCards.Count == 0)
-            {
-                <div class="hint-text">暂无</div>
-            }
-            else
-            {
-            <table class="entry-table"><thead><tr><th>接驳位</th><th>任务号</th><th>容器</th><th>仓库</th><th>申请时间</th><th>下发时间</th><th>操作</th><th>删除</th></tr></thead><tbody>
-            @foreach (var c in _removalCards)
-            {
-                <tr>
-                    <td><span class="entry-vehicle">🏭 @c.ConveyorCode</span></td>
-                    <td>@c.TaskId</td>
-                    <td>@c.ContainerCode</td>
-                    <td>@c.Warehouse</td>
-                    <td>@(c.AppliedAt?.ToString("HH:mm:ss") ?? "—")</td>
-                    <td>@(c.SendAt?.ToString("HH:mm:ss") ?? "—")</td>
-                    <td>@if (!c.Confirmed) {<button class="btn btn-primary btn-xs" @onclick="() => ConfirmRemoval(c)" disabled="@_removalBusy">确认</button>} else {<span class="badge badge-ok">已确认</span>}</td>
-                    <td><button class="btn btn-danger btn-xs" @onclick="() => DeleteRemoval(c)" @onclick:stopPropagation>✕</button></td>
-                </tr>
-            }
-            </tbody></table>
-            }
-            @if (_deletedRemovalTasks.Count > 0)
-            {
-                <div class="hint-text" style="margin:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                    <span>🗑 已删除</span>
-                    <button class="btn btn-outline btn-xs" @onclick="RestoreAllRemovals">恢复全部</button>
-                    @foreach (var id in _deletedRemovalTasks)
-                    {
-                        <span style="display:inline-flex;align-items:center;gap:4px;">
-                            <code>@id</code>
-                            <button class="btn btn-outline btn-xs" @onclick="() => RestoreRemoval(id)">恢复</button>
-                        </span>
-                    }
-                </div>
-            }
-            break;
-        }
-
-        case "sorting":
-        {
-            <div class="tab-toolbar">
-                <button class="btn @(SignalAuto.AutoSend ? "btn-outline" : "btn-primary") btn-xs"
-                        @onclick="ToggleAutoSend" disabled="@_busy">@(SignalAuto.AutoSend ? "切换手动" : "切换自动")</button>
-                <button class="btn btn-outline btn-sm" @onclick='() => RefreshSortingNow()' disabled="@_busy">🔄 刷新</button>
-                <span class="refresh-ok">@_sortingRefreshMsg</span>
-                <span style="flex:1;"></span>
-                @if (_sortingConfirming)
-                {
-                    <button class="btn btn-danger btn-sm" @onclick="DeleteAllCards">确认</button>
-                    <button class="btn btn-outline btn-sm" @onclick='() => _sortingConfirming = false'>取消</button>
-                }
-                else
-                {
-                    <button class="btn btn-danger btn-sm" @onclick='() => _sortingConfirming = true'>🗑 清空全部</button>
-                }
-                <span class="clear-ok">@_sortingClearMsg</span>
-            </div>
-            <div class="hint-text" style="margin-bottom:8px;">全自动：轮询发现 FINISHED 立即发 container_operation_finish 给 GRCS；手动：生成卡片等你点发送。</div>
-            @if (!_pollingOk) { <div class="hint-text" style="color:#f87171;margin:8px 0;">⚠ 无法连接 WCS 后端。@_lastError</div> }
-            @if (_cards.Count == 0)
-            {
-                <div class="hint-text">暂无分拣完成卡片。任务上报 FINISHED 且站点是分拣台时自动生成。</div>
-            }
-            else
-            {
-            <table class="entry-table">
-                <thead><tr><th>分拣台</th><th>任务号</th><th>容器</th><th>仓库</th><th>申请时间</th><th>下发时间</th><th>回库任务号</th><th>容器出场</th><th>推荐目的地</th><th>推荐区域</th><th>状态</th><th>操作</th></tr></thead>
-                <tbody>
-                @foreach (var card in _cards)
-                {
-                    var isSent = card.Status == "Sent";
                     <tr>
-                        <td><span class="entry-vehicle">🎯 @card.PickStation</span></td>
-                        <td>@card.TaskId @if (!string.IsNullOrEmpty(card.TaskType)) { <span class="badge badge-selected">@card.TaskType</span> }</td>
-                        <td>@card.ContainerCode</td>
-                        <td>@card.Warehouse</td>
-                        <td>@card.FoundAt.ToString("HH:mm:ss")</td>
-                        <td>@(card.SendTime?.ToString("HH:mm:ss") ?? "—")</td>
-                        <td>@(string.IsNullOrEmpty(card.ReturnTaskId) ? "—" : card.ReturnTaskId)</td>
-                        <td>@(card.RemoveContainer ? "🚪 出场" : "否")</td>
-                        <td>@(string.IsNullOrEmpty(card.DestStation) ? "—" : card.DestStation)</td>
-                        <td>@(string.IsNullOrEmpty(card.DestArea) ? "—" : card.DestArea)</td>
-                        <td><span class="badge @(CardBadgeClass(card.Status))">@CardStatusLabel(card.Status)</span></td>
-                        <td style="display:flex;gap:4px;align-items:center;">
-                            <button class="btn btn-primary btn-xs" @onclick="() => SendCard(card)" disabled="@(_busy || card.Status == "Sending" || isSent)">@(isSent ? "✓ 已发送" : "📤 发送")</button>
-                            <button class="btn btn-outline btn-xs" @onclick="() => OpenEdit(card)" disabled="@(_busy || card.Status == "Sending" || isSent)" title="编辑发送参数">✏️ 编辑</button>
-                            <button class="btn btn-danger btn-xs" @onclick="() => DeleteCard(card)" @onclick:stopPropagation>✕</button>
+                        <td title="系统唯一标识：同一 Key 的新进站会生成新 ID，放行后原卡自动更换 ID 退出匹配">#@e.Id</td>
+                        <td>@e.Time.ToString("HH:mm:ss")</td>
+                        <td>@e.Method</td>
+                        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@e.PathPattern">@e.PathPattern</td>
+                        <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@e.MockRuleDescription">@e.MockRuleDescription</td>
+                        <td><span class="badge @(e.Status=="Pending"?"badge-warn":e.Status=="Approved"?"badge-info":e.Status=="Allowed"?"badge-ok":"badge-empty")">@(e.Status=="Pending"?"待审批":e.Status=="Approved"?"已批准·待重试":e.Status=="Allowed"?"已放行":"已拒绝")</span></td>
+                        <td title="同一请求（body 相同）循环重试次数，去重不新增任务">重试 @e.Attempts 次</td>
+                        <td style="display:flex;gap:6px;flex-wrap:wrap;">
+                            @if (e.Status == "Pending")
+                            {
+                                <button class="btn btn-primary btn-xs" @onclick="() => DecideMock(e.Key, true)">批准</button>
+                                <button class="btn btn-danger btn-xs" @onclick="() => DecideMock(e.Key, false)">拒绝</button>
+                            }
+                            <button class="btn btn-outline btn-xs" @onclick="() => ToggleMockDetail(e.Key)">配置</button>
+                            <button class="btn btn-outline btn-xs" @onclick="() => DeleteMockApproval(e.Key)">删除</button>
                         </td>
                     </tr>
+                    @if (_expandedMock.Contains(e.Key))
+                    {
+                        <tr>
+                            <td colspan="8" class="mock-detail-cell">
+                                @{
+                                    var rule = !string.IsNullOrEmpty(e.RuleJson)
+                                        ? System.Text.Json.JsonSerializer.Deserialize<GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto>(e.RuleJson)
+                                        : null;
+                                }
+                                @if (rule != null)
+                                {
+                                    <div class="mock-detail">
+                                        <div class="mock-detail-row"><b>系统 ID</b> #@e.Id ｜ <b>关联键</b> <code>@e.Key</code></div>
+                                        <div class="mock-detail-row"><b>响应码</b> @rule.ResponseCode ｜ <b>Mock 卡</b> @e.MockRuleId</div>
+                                        <div class="mock-detail-row"><b>审批变量名</b> <code>@rule.ApprovalVariable</code> ｜ <b>批准时值</b> <code>@rule.ApprovalTrueValue</code> ｜ <b>拒绝时值</b> <code>@rule.ApprovalFalseValue</code></div>
+                                        <div class="mock-detail-row"><b>ResponseBody</b></div>
+                                        <pre class="mock-json">@rule.ResponseBody</pre>
+                                        <div class="mock-detail-row"><b>最新命中请求 Body</b></div>
+                                        <pre class="mock-json">@(string.IsNullOrEmpty(e.BodyJson) ? "(无 body)" : e.BodyJson)</pre>
+                                        @if (!string.IsNullOrEmpty(e.QueryString))
+                                        {
+                                            <div class="mock-detail-row"><b>Query</b></div>
+                                            <pre class="mock-json">@e.QueryString</pre>
+                                        }
+                                        @if (rule.Matchers.Count > 0)
+                                        {
+                                            <div class="mock-detail-row"><b>匹配条件</b></div>
+                                            <table class="entry-table"><tbody>
+                                            @foreach (var m in rule.Matchers)
+                                            { <tr><td>@m.Key</td><td>@m.Source</td><td>@m.Op</td><td>@m.Expected</td></tr> }
+                                            </tbody></table>
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="hint-text">无配置快照</div>
+                                }
+                            </td>
+                        </tr>
+                    }
                 }
                 </tbody>
             </table>
-            }
-            @if (!string.IsNullOrEmpty(_sortingResp))
-            {
-                <div class="response-panel @_sortingRespClass" style="margin-top:8px;">@_sortingResp</div>
-            }
-            break;
         }
     }
-    </div>
 
-    @* ── 分拣信号编辑弹窗：重新输入发送参数，确认后覆盖该表格行 ── *@
-    @if (_editingCard != null && _editDraft != null)
+    <div class="section-divider"></div>
+
+    @* ── 通用 Mock 入站：任意 RCS→WCS 回调均可拦截，前端新建卡片即生效 ── *@
+    <div class="sub-header">
+        🌐 通用 Mock 入站
+        <span class="hint-text" style="margin:0;">按 URL+参数匹配返回自定义 JSON（如 station_entry_request 控制是否允许）</span>
+        <button class="btn btn-primary btn-sm" @onclick="CreateMockRule" style="margin-left:auto;">+ 新建 Mock</button>
+    </div>
+    @if (_mockRules.Count == 0)
     {
-        var editing = _editingCard;
-        var draft = _editDraft;
-        <div class="edit-overlay" @onclick:stopPropagation>
-            <div class="edit-modal" @onclick:stopPropagation>
-                <div class="edit-modal-header">
-                    <span class="edit-modal-title">✏️ 编辑分拣信号</span>
-                    <span class="hint-text" style="margin:0;">任务号 <code>@editing.TaskId</code></span>
-                    <span style="flex:1;"></span>
-                    <button class="btn btn-outline btn-xs" @onclick="CancelEdit">✕</button>
-                </div>
-                <div class="edit-modal-body">
-                    <div class="form-grid2" style="margin-top:0;">
-                        <div class="form-group" style="grid-column:1/-1;">
-                            <label>回库任务号（留空=使用分拣任务号）</label>
-                            <input type="text" @bind="draft.ReturnTaskId" placeholder="@editing.TaskId" />
-                        </div>
-                        <div class="form-group" style="grid-column:1/-1;">
-                            <label class="sorting-check"><input type="checkbox" @bind="draft.RemoveContainer" />🚪 容器出场（勾选=GRCS 不再生成回库任务）</label>
-                        </div>
-                        <div class="form-group">
-                            <label>推荐目的地</label>
-                            <input type="text" @bind="draft.DestStation" placeholder="留空=回原库位" />
-                        </div>
-                        <div class="form-group">
-                            <label>推荐区域</label>
-                            <input type="text" @bind="draft.DestArea" placeholder="留空=不指定" />
-                        </div>
+        <div class="hint-text">暂无 Mock 规则。示例：新建 <code>/api/v1/station_entry_request</code> + 匹配 <code>body.VehicleCode=Car_101</code> + 返回 <code>{"success":false,"message":"拒绝进入"}</code>，保存后 RCS 下次请求即按此返回，无需重启。</div>
+    }
+    else
+    {
+        <div class="mock-grid">
+            @foreach (var r in _mockRules)
+            {
+                <div class="mock-card">
+                    <div class="mock-card-head">
+                        <span class="badge @(r.Method == "GET" ? "badge-ok" : "badge-info")">@r.Method</span>
+                        <span class="badge @(r.Enabled ? "badge-ok" : "badge-empty")" style="margin-left:auto;">@(r.Enabled ? "● 启用" : "○ 停用")</span>
+                    </div>
+                    <div class="mock-card-path" title="@r.PathPattern">@r.PathPattern</div>
+                    @if (!string.IsNullOrEmpty(r.Description))
+                    {
+                        <div class="mock-card-desc">@r.Description</div>
+                    }
+                    <div class="mock-card-meta">
+                        <span class="badge-info">@r.Matchers.Count 条件</span>
+                        <span class="badge-info">→ @r.ResponseCode</span>
+                        @if (r.BoardSync)
+                        {
+                            <span class="badge badge-ok" title="任务阶段卡：命中时自动提取 taskId/stage 推送任务看板">🔗 任务阶段</span>
+                        }
+                        @if (r.RequiresApproval)
+                        {
+                            <span class="badge badge-warn" title="命中时生成请求任务，需手动批准/拒绝">⏳ 审批</span>
+                        }
+                    </div>
+                    <div class="mock-card-body" title="@r.ResponseBody">@r.ResponseBody</div>
+                    <div class="mock-card-actions">
+                        <button class="btn btn-outline btn-xs" @onclick="() => EditMockRule(r)">✏️ 编辑</button>
+                        <button class="btn btn-danger btn-xs" @onclick="() => RequestDeleteMock(r.Id, r.PathPattern)">✕ 删除</button>
+                        <button class="btn @(r.Enabled ? "btn-outline" : "btn-primary") btn-xs" @onclick="() => ToggleMockEnabled(r)">@(r.Enabled ? "停用" : "启用")</button>
                     </div>
                 </div>
-                <div class="edit-modal-footer">
-                    <button class="btn btn-outline btn-sm" @onclick="CancelEdit">取消</button>
-                    <button class="btn btn-primary btn-sm" @onclick="SaveEdit">确认</button>
+            }
+        </div>
+    }
+
+    <div class="section-divider"></div>
+
+    @* ── 功能模板管理：创建/编辑/删除，供任务模板起点/终点关联 ── *@
+    <div class="sub-header">
+        🧩 功能模板
+        <span class="hint-text" style="margin:0;">WCS 出站模块（起点/终点关联），配置下发信号</span>
+        <button class="btn btn-primary btn-sm" @onclick="CreateModule" style="margin-left:auto;">+ 创建模块</button>
+    </div>
+    @if (ModuleRegistry.All.Count == 0)
+    {
+        <div class="hint-text">暂无模块。点击「+ 创建模块」新建：自定义名称、API 地址（WCS 后端代理相对路径）、参数（值来源可选）。</div>
+    }
+    else
+    {
+        <div class="mod-grid">
+            @foreach (var m in ModuleRegistry.All)
+            {
+                <div class="mod-card">
+                    <div class="mod-card-head">
+                        <span class="mod-card-icon">⚙️</span>
+                        <div class="mod-card-name">@m.Name</div>
+                    </div>
+                    <div class="mod-card-url">@m.ApiUrl</div>
+                    <div class="mod-card-meta">
+                        <span class="badge-info">@(m.Params.Count) 参数</span>
+                    </div>
+                    <div class="mod-card-actions">
+                        <button class="btn btn-outline btn-xs" @onclick="() => EditModule(m)">✏️ 编辑</button>
+                        <button class="btn btn-danger btn-xs" @onclick="() => RequestDeleteModule(m.Id, m.Name)">✕ 删除</button>
+                    </div>
+                </div>
+            }
+        </div>
+        <div class="hint-text">执行时机：起点模块 = 下发任务组之前；起点之后模块 = 下发接口返回 success 后；终点模块 = 任务到达终点（FINISHED）时由后端自动执行。</div>
+    }
+
+    @if (_mockDraft != null)
+    {
+        var d = _mockDraft;
+        <div class="template-modal-overlay" @onclick="CancelMockEdit">
+            <div class="template-modal tpl-modal mod-modal" @onclick:stopPropagation style="max-width:680px;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">
+                        <span class="tpl-modal-icon">🌐</span>
+                        <div>
+                            <div>@(_editingMock == null ? "新建 Mock 规则" : "编辑 Mock 规则")</div>
+                            <div class="tpl-modal-sub">匹配入站请求返回自定义 JSON；勾选「关联任务看板」即为任务阶段卡</div>
+                        </div>
+                    </div>
+                    <button type="button" class="tpl-modal-close" @onclick="CancelMockEdit" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body">
+                    <div class="form-section-title">基础配置</div>
+                    <div class="form-grid2">
+                        <div class="form-group">
+                            <label>Method</label>
+                            <select @bind="d.Method">
+                                <option value="POST">POST</option>
+                                <option value="GET">GET</option>
+                                <option value="PUT">PUT</option>
+                                <option value="DELETE">DELETE</option>
+                                <option value="*">* (任意)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>PathPattern <span class="req-star">*</span></label>
+                            <input type="text" @bind="d.PathPattern" placeholder="/api/v1/station_entry_request 或 /api/mock/*" />
+                        </div>
+                        <div class="form-group">
+                            <label>ResponseCode</label>
+                            <input type="number" @bind="d.ResponseCode" />
+                        </div>
+                        <div class="form-group">
+                            <label>Priority（越大越先匹配）</label>
+                            <input type="number" @bind="d.Priority" />
+                        </div>
+                        <div class="form-group" style="grid-column:1/-1;">
+                            <label>描述</label>
+                            <input type="text" @bind="d.Description" placeholder="如：Car_101 禁入 0100000108_1" />
+                        </div>
+                    </div>
+
+                    <div class="form-section-title">匹配条件（全部满足才命中）</div>
+                    <table class="workitem-table mod-param-table">
+                        <thead><tr><th style="width:22%;">Key</th><th style="width:16%;">Source</th><th style="width:18%;">Op</th><th>Expected</th><th style="width:38px;"></th></tr></thead>
+                        <tbody>
+                        @foreach (var m in d.Matchers)
+                        {
+                            <tr>
+                                <td><input type="text" @bind="m.Key" placeholder="VehicleCode" /></td>
+                                <td><select @bind="m.Source"><option value="body">body</option><option value="query">query</option><option value="path">path</option></select></td>
+                                <td><select @bind="m.Op"><option value="equals">equals</option><option value="contains">contains</option><option value="regex">regex</option><option value="exists">exists</option></select></td>
+                                <td><input type="text" @bind="m.Expected" placeholder="Car_101" /></td>
+                                <td><button class="btn btn-danger btn-xs" @onclick="() => RemoveMockMatcher(m)">✕</button></td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                    <div style="display:flex;gap:8px;margin-top:6px;">
+                        <button class="btn btn-outline btn-xs" @onclick="AddMockMatcher">+ 添加条件</button>
+                        <button class="btn btn-outline btn-xs" @onclick="() => AddMockMatcherPreset()">+ 快捷：station_entry_request 模板</button>
+                    </div>
+
+                    <div class="form-section-title">行为选项</div>
+                    <div class="option-row">
+                        <div>
+                            <div class="option-title">启用规则</div>
+                            <div class="option-desc">停用后请求不会命中本卡片</div>
+                        </div>
+                        <label class="switch"><input type="checkbox" @bind="d.Enabled" /><span class="slider"></span></label>
+                    </div>
+                    <div class="option-row">
+                        <div>
+                            <div class="option-title">同时落库</div>
+                            <div class="option-desc">task_stage_change 等业务请勾选以更新看板</div>
+                        </div>
+                        <label class="switch"><input type="checkbox" @bind="d.AlsoRecord" /><span class="slider"></span></label>
+                    </div>
+                    <div class="option-row">
+                        <div>
+                            <div class="option-title">🔗 关联任务看板（任务阶段卡）</div>
+                            <div class="option-desc">URL 任意，全系统仅一张：命中时自动提取 taskId/stage（兼容 task_code/orderNo/status 等别名）推送任务看板；系统要求至少存在一张才允许下发任务；与「需审批」互斥</div>
+                        </div>
+                        <label class="switch"><input type="checkbox" checked="@d.BoardSync" @onchange="(e) => ToggleBoardSync(d, e)" /><span class="slider"></span></label>
+                    </div>
+                    <div class="option-row">
+                        <div>
+                            <div class="option-title">需审批</div>
+                            <div class="option-desc">命中时生成请求任务，需手动批准才按审批变量返回；与「关联任务看板」互斥</div>
+                        </div>
+                        <label class="switch"><input type="checkbox" checked="@d.RequiresApproval" @onchange="(e) => ToggleApproval(d, e)" /><span class="slider"></span></label>
+                    </div>
+
+                    <div class="form-section-title">响应体</div>
+                    @if (d.RequiresApproval)
+                    {
+                        <div class="form-grid2" style="border:1px dashed #334155; padding:10px; border-radius:8px; margin-bottom:8px;">
+                            <div class="form-group">
+                                <label>审批变量名</label>
+                                <input type="text" @bind="d.ApprovalVariable" placeholder="success" />
+                            </div>
+                            <div class="form-group">
+                                <label>批准时值</label>
+                                <input type="text" @bind="d.ApprovalTrueValue" placeholder="true" />
+                            </div>
+                            <div class="form-group">
+                                <label>拒绝时值</label>
+                                <input type="text" @bind="d.ApprovalFalseValue" placeholder="false" />
+                            </div>
+                            <div class="form-group" style="grid-column:1/-1;">
+                                <span class="hint-text">在 ResponseBody 中用 <code>{{approval}}</code> 占位，审批后将替换为对应值；若 JSON 已含该字段名则自动覆写。</span>
+                            </div>
+                        </div>
+                    }
+                    <div class="form-group">
+                        <label>ResponseBody JSON</label>
+                        <textarea @bind="d.ResponseBody" rows="5" placeholder='{"success":false,"message":"拒绝进入","msgTime":"{{now}}"}  支持 {{query.key}} / {{body.key}} / {{approval}} 占位' style="font-family:monospace;background:#0b1120;"></textarea>
+                    </div>
+                    @if (!string.IsNullOrEmpty(_mockError))
+                    {
+                        <div class="tpl-error">@_mockError</div>
+                    }
+                </div>
+                <div class="tpl-modal-footer">
+                    <button class="btn btn-outline" @onclick="CancelMockEdit">取消</button>
+                    <button class="btn btn-primary" @onclick="SaveMockEdit">✅ 保存</button>
                 </div>
             </div>
         </div>
     }
+
+    <div class="section-divider"></div>
+
+    @* ── 模块执行记录：轮询后端 GET /api/wcs/modules/logs 展示（后端统一执行器写入）── *@
+    <div class="sub-header">
+        📤 模块执行记录
+        <button class="btn btn-outline btn-xs" @onclick="ClearModuleLog" style="margin-left:auto;">清空记录</button>
+    </div>
+    @if (_execLog.Count == 0)
+    {
+        <div class="hint-text">暂无执行记录。起点模块在「任务下发」时执行，起点之后模块在下发接口返回 success 后执行，终点模块在任务到达终点（FINISHED）时由后端自动执行，结果会实时显示在这里。</div>
+    }
+    else
+    {
+        <table class="entry-table">
+            <thead><tr><th>时间</th><th>任务号</th><th>位置</th><th>模块</th><th>结果</th><th>响应</th></tr></thead>
+            <tbody>
+            @foreach (var e in _execLog)
+            {
+                <tr>
+                    <td>@e.Time</td>
+                    <td>@e.TaskId</td>
+                    <td>@e.Point</td>
+                    <td>@e.Module</td>
+                    <td><span class="badge @(e.Ok ? "badge-ok" : "badge-warn")">@(e.Ok ? "✅" : "❌") HTTP @e.HttpCode</span></td>
+                    <td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@e.Detail">@e.Detail</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+
+    @* ── 编辑/新建功能模块弹窗：名称 + API 地址 + 参数（值来源）── *@
+    @if (_moduleDraft != null)
+    {
+        var m = _moduleDraft;
+        <div class="template-modal-overlay" @onclick="CancelModuleEdit">
+            <div class="template-modal tpl-modal mod-modal" @onclick:stopPropagation>
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">
+                        <span class="tpl-modal-icon">⚙️</span>
+                        <div>
+                            <div>@(_editingModule != null ? "编辑功能模板" : "新建功能模板")</div>
+                            <div class="tpl-modal-sub">任务模板的起点 / 起点之后 / 终点均可关联本模块</div>
+                        </div>
+                    </div>
+                    <button type="button" class="tpl-modal-close" @onclick="CancelModuleEdit" title="关闭">✕</button>
+                </div>
+
+                <div class="tpl-modal-body">
+                    <div class="form-grid2">
+                        <div class="form-group">
+                            <label>名称 <span class="req-star">*</span></label>
+                            <input type="text" @bind="m.Name" placeholder="如：出库-接驳位移除" />
+                        </div>
+                        <div class="form-group">
+                            <label>API 地址 <span class="req-star">*</span> <span class="hint-inline">GRCS 相对路径（经后端通用转发接口代发）</span></label>
+                            <input type="text" @bind="m.ApiUrl" placeholder="如 /api/v1/container_remove" />
+                        </div>
+                    </div>
+
+                    <div class="tpl-section-title" style="margin-top:16px;">参数配置</div>
+                    <table class="workitem-table mod-param-table">
+                        <thead><tr><th style="width:28%;">参数</th><th style="width:26%;">值来源</th><th>固定值</th><th style="width:38px;"></th></tr></thead>
+                        <tbody>
+                        @foreach (var p in m.Params)
+                        {
+                            <tr>
+                                <td><input type="text" @bind="p.Name" /></td>
+                                <td><select @bind="p.Source">
+                                        <option value="Fixed">固定值</option>
+                                        <option value="StartPoint">起点值</option>
+                                        <option value="EndPoint">终点值</option>
+                                        <option value="TaskContainer">任务容器</option>
+                                        <option value="TaskWarehouse">任务仓库</option>
+                                        <option value="TaskType">任务类型</option>
+                                        <option value="TaskId">任务号</option>
+                                        <option value="Now">当前时间</option>
+                                    </select></td>
+                                <td>@if (p.Source == WorkValueSource.Fixed) { <input type="text" @bind="p.FixedValue" placeholder="固定值" /> }</td>
+                                <td><button class="btn btn-danger btn-xs" @onclick="() => RemoveModuleParam(p)">✕</button></td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                    <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
+                        <button class="btn btn-outline btn-xs" @onclick="AddModuleRecommendedParams">+ 推荐参数（StationCode/ContainerCode/MsgTime/Warehouse）</button>
+                        <button class="btn btn-outline btn-xs" @onclick="AddModuleCustomParam">+ 自定义参数</button>
+                    </div>
+
+                    @if (!string.IsNullOrEmpty(_moduleError))
+                    {
+                        <div class="tpl-error">@_moduleError</div>
+                    }
+                </div>
+
+                <div class="tpl-modal-footer">
+                    <button class="btn btn-outline" @onclick="CancelModuleEdit">取消</button>
+                    <button class="btn btn-primary" @onclick="SaveModuleEdit">✅ 保存</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (_confirmVisible)
+    {
+        <div class="template-modal-overlay" @onclick="CancelConfirm">
+            <div class="tpl-modal" @onclick:stopPropagation style="max-width:420px;">
+                <div class="tpl-modal-header">
+                    <div class="tpl-modal-title">@_confirmTitle</div>
+                    <button class="tpl-modal-close" @onclick="CancelConfirm" title="关闭">✕</button>
+                </div>
+                <div class="tpl-modal-body">
+                    <div class="hint-text" style="white-space:pre-wrap;color:#e2e8f0;">@_confirmMessage</div>
+                </div>
+                <div class="tpl-modal-footer" style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+                    <button class="btn btn-danger" @onclick="ConfirmAsync">确认</button>
+                    <button class="btn btn-outline" @onclick="CancelConfirm">取消</button>
+                </div>
+            </div>
+        </div>
+    }
+
     }
 </div>
 
 @code {
-    private static readonly System.Text.Json.JsonSerializerOptions _jsonOpts = new() { PropertyNameCaseInsensitive = true };
-
-    // ── 连接 ──
-    private bool _busy, _pollingOk = true;
-    private string _lastError = "";
-
-    // ── 各区域刷新/清空反馈（独立，互不干扰）──
-    private string _admRefreshMsg = "", _arrivalRefreshMsg = "", _removalRefreshMsg = "", _sortingRefreshMsg = "";
-    private string _admClearMsg = "", _arrivalClearMsg = "", _removalClearMsg = "", _sortingClearMsg = "";
-    private System.Threading.Timer? _admRefreshTimer, _arrivalRefreshTimer, _removalRefreshTimer, _sortingRefreshTimer;
-    private System.Threading.Timer? _admClearTimer, _arrivalClearTimer, _removalClearTimer, _sortingClearTimer;
-    // ── 清空确认状态 ──
-    private bool _admConfirming, _arrivalConfirming, _removalConfirming, _sortingConfirming;
-    private void ShowFeedback(Action<string> setMsg, string text, ref System.Threading.Timer? timer)
-    {
-        setMsg(text);
-        timer?.Dispose();
-        timer = new System.Threading.Timer(_ => { setMsg(""); InvokeAsync(StateHasChanged); },
-            null, TimeSpan.FromSeconds(2), Timeout.InfiniteTimeSpan);
-        StateHasChanged();
-    }
-
-    // ── 进入申请 ──
-    private bool _autoMode;
-    private bool _autoModeSeeded; // true = localStorage 有缓存，不需要从后端同步
-    private int _pendingCount;
-    /// <summary>已确认数：非待确认（已批准/已放行/已拒绝）的进入申请条数。</summary>
-    private int _admHandledCount => _events.Count(e => e.Status != "Pending");
-    private List<EntryRequestEvent> _events = [];
-
-    // ── 货物到达（自动开关/自动确认在 SignalAutoService，后台跨页面运行）──
-    private List<ArrivalCard> _arrivalCards = [];
-    private HashSet<string> _confirmedTasks = [];
-    private HashSet<string> _deletedArrivalTasks = [];
-    private bool _arrivalBusy;
-    private int _pendingArrival;
-    private string _cardError = "";
-
-    // ── 货物移除 ──
-    private List<RemovalCard> _removalCards = [];
-    private HashSet<string> _confirmedRemovalTasks = [];
-    private HashSet<string> _deletedRemovalTasks = [];
-    private bool _removalBusy;
-    private int _pendingRemoval;
-
-    // ── 分拣信号（自动发送在 SignalAutoService）──
-    private List<SortingCard> _cards = [];
-    private int _pendingSorting => _cards.Count(c => c.Status == "Pending");
-    private string _sortingResp = "";
-    private string _sortingRespClass = "";
-
-    /// <summary>
-    /// 共享刷新：零 HTTP 产出到达/移除卡片和分拣卡片。
-    /// 优化前这里会 GetTaskStageEventsAsync 拉一次全量；现在阶段事件与 FINISHED 集合
-    /// 直接从 TaskStageHub 内存缓存读（hub 负责轮询与增量合并）。
-    /// 下面两个构建方法复用同一份数据单趟遍历，仍保持"一次内存读 + 一次台账读"的
-    /// 省事设计（台账走 TaskLedgerService 内存缓存，也无 HTTP）。
-    /// </summary>
-    private async Task RefreshAllAsync()
-    {
-        try
-        {
-            // ── 读共享 SignalR 缓存：阶段事件 + FINISHED 集合（零 HTTP，实时推送由 TaskStageHub 统一接收）──
-            await StageHub.EnsureStartedAsync();
-            List<StageChangeEvent> stageEvents = StageHub.Events.ToList();
-            HashSet<string> finishedIds = StageHub.FinishedTaskIds;
-            // 连接判定用共享后端健康状态（BackendHealthService，同 BackendStatus 绿点，AutomationHub 1s 回报）
-            if (Health.WcsOnline == false) { _pollingOk = false; _lastError = "无法连接 WCS 后端"; }
-            else { _pollingOk = true; _lastError = ""; }
-
-            // ── 确认/已发送集合：后端 workflow_state（AutomationHub 1s 轮询，跨标签页一致）──
-            _confirmedTasks = AutoHub.ConfirmedIds("arrival");
-            _confirmedRemovalTasks = AutoHub.ConfirmedIds("removal");
-            _sentTasks = AutoHub.ConfirmedIds("sent");
-
-            // ── 只要一次 JS interop：拉下发历史，单趟遍历同时产出 dispatchedIds + 到达/移除卡片 ──
-            await BuildTaskCardsAsync(finishedIds, stageEvents);
-
-            // ── 分拣卡片复用同一次 stageEvents ──
-            BuildSortingCards(stageEvents);
-        }
-        catch (Exception ex) { _cardError = ex.Message; }
-    }
-
-    /// <summary>从任务台账构建到达/移除卡片（唯一数据源，内存缓存读取）。ContainerCode=托盘号，CargoCode=货物号。</summary>
-    private async Task BuildTaskCardsAsync(HashSet<string> finishedIds, List<StageChangeEvent> stageEvents)
-    {
-        try
-        {
-            _cardError = "";
-            var entries = await Ledger.GetAsync();
-
-            // 申请时间 = GRCS 任务完成时刻（FINISHED 事件时间）；下发时间 = 信号确认/发送落库时刻（workflow_state.time）
-            var finishedTime = stageEvents.Where(e => e.Stage == "FINISHED" && !string.IsNullOrEmpty(e.TaskId))
-                .GroupBy(e => e.TaskId, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(g => g.Key, g => g.Last().Time, StringComparer.OrdinalIgnoreCase);
-            var arrivalConfirmTime = ConfirmTimeMap("arrival");
-            var removalConfirmTime = ConfirmTimeMap("removal");
-
-            // 段2 检查用：成功下发的任务号
-            var dispatchedIds = new HashSet<string>(entries.Where(e => e.Ok).Select(e => e.TaskId));
-
-            // 构建到达卡片（入库段1 自动 / 入库段2 手动）
-            var arrivals = new List<ArrivalCard>();
-            foreach (var t in entries)
-            {
-                if (string.IsNullOrEmpty(t.TaskId)) continue;
-                if (_deletedArrivalTasks.Contains(t.TaskId)) continue;
-                var isAuto = t.TaskId.StartsWith("SimAuto_", StringComparison.OrdinalIgnoreCase);
-                var isManual = t.TaskId.StartsWith("SimManual_", StringComparison.OrdinalIgnoreCase);
-                if (!isAuto && !isManual) continue;
-                if (!(isAuto && t.TaskType == "CONTAINER_CARRY_INBOUND") && !(isManual && t.TaskType == "CARGO_CARRY_INBOUND")) continue;
-                if (isAuto && (!finishedIds.Contains(t.TaskId) || !dispatchedIds.Contains(Seg2Id(t.TaskId)))) continue;
-                var st = isAuto ? t.StationCode.LastOrDefault() : t.StationCode.FirstOrDefault();
-                // 货物码：自动模式由后端在段2 下发时写入台账（段2 条目 CargoCode），无需本地生成
-                var cargoCode = isAuto
-                    ? (entries.FirstOrDefault(e => e.TaskId == Seg2Id(t.TaskId))?.CargoCode ?? t.CargoCode)
-                    : t.CargoCode;
-                arrivals.Add(new ArrivalCard
-                {
-                    TaskId = t.TaskId, ConveyorCode = (st ?? "").ToWcsCode(_mapStations), ContainerCode = cargoCode,
-                    Warehouse = t.Warehouse, Time = t.Time, Confirmed = _confirmedTasks.Contains(t.TaskId),
-                    AppliedAt = finishedTime.TryGetValue(t.TaskId, out var ft) ? ft : null,
-                    SendAt = arrivalConfirmTime.TryGetValue(t.TaskId, out var stm) ? stm : null
-                });
-            }
-            _arrivalCards = arrivals;
-            _pendingArrival = arrivals.Count(c => !c.Confirmed);
-
-            // 构建移除卡片（出库段1 自动 / 出库段2 手动）：容器号取货物号，没有则回退托盘号
-            var removals = new List<RemovalCard>();
-            foreach (var t in entries)
-            {
-                if (string.IsNullOrEmpty(t.TaskId)) continue;
-                if (_deletedRemovalTasks.Contains(t.TaskId)) continue;
-                var isAuto = t.TaskId.StartsWith("SimAuto_", StringComparison.OrdinalIgnoreCase);
-                var isManual = t.TaskId.StartsWith("SimManual_", StringComparison.OrdinalIgnoreCase);
-                if (!isAuto && !isManual) continue;
-                if (!(isAuto && t.TaskType == "CARGO_CARRY_OUTBOUND") && !(isManual && t.TaskType == "CONTAINER_CARRY_OUTBOUND")) continue;
-                if (isAuto && (!finishedIds.Contains(t.TaskId) || !dispatchedIds.Contains(Seg2Id(t.TaskId)))) continue;
-                var st = isAuto ? t.StationCode.LastOrDefault() : t.StationCode.FirstOrDefault();
-                var containerCode = string.IsNullOrEmpty(t.CargoCode) ? t.ContainerCode : t.CargoCode;
-                removals.Add(new RemovalCard
-                {
-                    TaskId = t.TaskId, ConveyorCode = (st ?? "").ToWcsCode(_mapStations), ContainerCode = containerCode,
-                    Warehouse = t.Warehouse, Time = t.Time, Confirmed = _confirmedRemovalTasks.Contains(t.TaskId),
-                    AppliedAt = finishedTime.TryGetValue(t.TaskId, out var ft) ? ft : null,
-                    SendAt = removalConfirmTime.TryGetValue(t.TaskId, out var stm) ? stm : null
-                });
-            }
-            _removalCards = removals;
-            _pendingRemoval = removals.Count(c => !c.Confirmed);
-        }
-        catch (Exception ex) { _cardError = ex.Message; }
-    }
-
-    /// <summary>workflow_state 某 kind 的确认/发送时间（TaskId → 落库时刻）。</summary>
-    private Dictionary<string, DateTime?> ConfirmTimeMap(string kind)
-    {
-        var map = new Dictionary<string, DateTime?>(StringComparer.OrdinalIgnoreCase);
-        if (AutoHub.ConfirmState.TryGetValue(kind, out var rows))
-        {
-            foreach (var r in rows)
-                map[r.TaskId] = DateTime.TryParse(r.Time, out var dt) ? dt : null;
-        }
-        return map;
-    }
-
-    /// <summary>从预加载的阶段事件中筛选分拣完成卡片（不再额外调 HTTP）。</summary>
-    private void BuildSortingCards(List<StageChangeEvent> stageEvents)
-    {
-        try
-        {
-            if (_mapStations.Count == 0) return;
-            var finished = stageEvents.Where(e => e.Stage == "FINISHED").OrderBy(e => e.Time);
-            foreach (var e in finished)
-            {
-                var station = _mapStations.FirstOrDefault(s => s.Mark == e.StationCode)
-                    ?? _mapStations.FirstOrDefault(s => s.Mark == e.StationCode.ToMark());
-                if (station == null) continue;
-                if ((station.StationType & (MapStationTypeBits.PickingStation | MapStationTypeBits.PeopleStation)) == 0) continue;
-                var isSent = _sentTasks.Contains(e.TaskId);
-                if (!_knownTasks.Add(e.TaskId))
-                {
-                    // 已有卡片：仅同步状态与发送参数（后端自动发送/其他标签页发送后及时翻转为已发送，不重建卡片）
-                    var existing = _cards.FirstOrDefault(c => c.TaskId == e.TaskId);
-                    if (existing != null)
-                    {
-                        if (isSent && AutoHub.SentParams(e.TaskId) is SortingSendParams sp2)
-                        {
-                            existing.ReturnTaskId = string.IsNullOrEmpty(sp2.ReturnTaskId) ? existing.ReturnTaskId : sp2.ReturnTaskId;
-                            existing.RemoveContainer = sp2.RemoveContainer;
-                            existing.DestStation = sp2.DestStation ?? "";
-                            existing.DestArea = sp2.DestArea ?? "";
-                            existing.Status = "Sent";
-                        }
-                        else if (existing.Status == "Pending") existing.Status = isSent ? "Sent" : "Pending";
-                    }
-                    continue;
-                }
-                var card = new SortingCard { TaskId = e.TaskId, TaskType = string.Join("+", MapStationTypeBits.DecodeNames(station.StationType)), ContainerCode = e.ContainerCode, Warehouse = e.Warehouse, PickStation = e.StationCode, FoundAt = e.Time, ReturnTaskId = e.TaskId + "_R", Status = isSent ? "Sent" : "Pending" };
-                // 已发送的卡片：用后端保存的发送参数重建（含操作员编辑过的值），刷新后不走样
-                if (isSent && AutoHub.SentParams(e.TaskId) is SortingSendParams sp)
-                {
-                    card.ReturnTaskId = string.IsNullOrEmpty(sp.ReturnTaskId) ? card.ReturnTaskId : sp.ReturnTaskId;
-                    card.RemoveContainer = sp.RemoveContainer;
-                    card.DestStation = sp.DestStation ?? "";
-                    card.DestArea = sp.DestArea ?? "";
-                    card.Status = "Sent";
-                }
-                _cards.Insert(0, card);
-            }
-        }
-        catch { }
-    }
-
-    private HashSet<string> _knownTasks = [];
-    private HashSet<string> _sentTasks = [];
-    private List<MapStationLite> _mapStations = [];
-
-    // ── 面板折叠（持久化到 localStorage）──
     private bool _panelCollapsed;
     private void ToggleSignalSection()
     {
@@ -584,359 +485,403 @@
         _ = LocalStore.SetAsync(Js, "grcs_si_collapsed", _panelCollapsed ? "1" : "0");
     }
 
-    // ── 类型 tab：四个类型共用一片展示区，切换即切内容（选中项持久化）──
-    private string _activeSection = "adm";
-    private void SetSection(string k)
+    // ── 二次确认弹窗（删除模块）──
+    private bool _confirmVisible;
+    private string _confirmTitle = "";
+    private string _confirmMessage = "";
+    private Func<Task>? _confirmAction;
+    private void ShowConfirm(string title, string message, Func<Task> action) { _confirmTitle = title; _confirmMessage = message; _confirmAction = action; _confirmVisible = true; }
+    private void CancelConfirm() { _confirmVisible = false; _confirmAction = null; }
+    private async Task ConfirmAsync() { var act = _confirmAction; _confirmVisible = false; _confirmAction = null; if (act != null) await act(); }
+    private void RequestDeleteModule(string id, string name) => ShowConfirm("确认删除", $"是否确认删除功能模板「{name}」？", () => DeleteModule(id));
+
+    // ── 通用 Mock 入站（持久化 mock_rules）──
+    private List<GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto> _mockRules = [];
+    private GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto? _editingMock;
+    private GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto? _mockDraft;
+    private string _mockError = "";
+
+    // ── 请求信号（通用 Mock 审批，所有 RCS→WCS 请求经 Mock 命中需审批时在此处理）──
+    private List<WcsApiClient.MockApprovalEvent> _mockApprovals = [];
+    private PeriodicTimer? _mockApprovalTimer;
+    private string? _approvalVersion = "";
+    private async Task LoadMockApprovals(bool forceRender = true)
     {
-        if (_activeSection == k) return;
-        _activeSection = k;
-        _ = LocalStore.SetAsync(Js, "grcs_si_tab", k);
-        _ = InvokeAsync(async () => { await RefreshExpandedSections(); StateHasChanged(); });
+        try
+        {
+            var mlist = await Api.GetMockApprovalsAsync();
+            if (mlist == null) return;
+            var first = mlist.FirstOrDefault();
+            var version = $"{mlist.Count}|{first?.Id}|{first?.Attempts}|{first?.Status}|{first?.Time.Ticks}";
+            if (version == _approvalVersion) return;   // 无变化不重绘，避免整栏每 2 秒闪一下
+            _approvalVersion = version;
+            _mockApprovals = mlist;
+            if (forceRender) StateHasChanged();
+        }
+        catch { }
+    }
+    private async Task ClearMockApprovals()
+    {
+        await Api.ClearMockApprovalsAsync();
+        _mockApprovals.Clear();
+        StateHasChanged();
+    }
+    private HashSet<string> _expandedMock = new();
+    private void ToggleMockDetail(string key) { if (_expandedMock.Contains(key)) _expandedMock.Remove(key); else _expandedMock.Add(key); StateHasChanged(); }
+
+    private async Task DecideMock(string key, bool allow)
+    {
+        await Api.DecideMockAsync(key, allow);
+        await LoadMockApprovals();
+    }
+    private async Task DeleteMockApproval(string key)
+    {
+        await Api.DeleteMockApprovalAsync(key);
+        await LoadMockApprovals();
+    }
+    private async Task PollMockApprovalsAsync()
+    {
+        _mockApprovalTimer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try { while (await _mockApprovalTimer.WaitForNextTickAsync()) { await LoadMockApprovals(false); await InvokeAsync(StateHasChanged); } } catch { }
     }
 
-    private string _storageListenerId = "";
-    private bool _storageListenerRegistered;
-    private bool _refreshing;
-    private System.Threading.Timer? _refreshDebounceTimer;
+    // ── 功能模板管理（持久化 grcs_si_modules）──
+    private const string ModuleStorageKey = "grcs_si_modules";
+    private WcsModule? _editingModule;
+    private WcsModule? _moduleDraft;
+    private string _moduleError = "";
+
+    /// <summary>创建新模块：生成唯一 Id、默认名称/API/参数，并打开编辑弹窗。</summary>
+    private void CreateModule()
+    {
+        _editingModule = null;
+        _moduleDraft = new WcsModule
+        {
+            Id = "MOD_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString("x").ToUpper(),
+            Name = "新模块",
+            ApiUrl = "/api/v1/container_remove",
+            Params =
+            [
+                new WorkParam { Name = "StationCode", Source = WorkValueSource.StartPoint },
+                new WorkParam { Name = "ContainerCode", Source = WorkValueSource.TaskContainer },
+                new WorkParam { Name = "MsgTime", Source = WorkValueSource.Now },
+                new WorkParam { Name = "Warehouse", Source = WorkValueSource.TaskWarehouse },
+            ]
+        };
+        _moduleError = "";
+        StateHasChanged();
+    }
+
+    /// <summary>编辑已有模块（草稿 = 深拷贝，取消不落库）。</summary>
+    private void EditModule(WcsModule m)
+    {
+        _editingModule = m;
+        _moduleDraft = new WcsModule
+        {
+            Id = m.Id,
+            Name = m.Name,
+            ApiUrl = m.ApiUrl,
+            Params = m.Params.Select(p => new WorkParam { Name = p.Name, Source = p.Source, FixedValue = p.FixedValue }).ToList()
+        };
+        _moduleError = "";
+        StateHasChanged();
+    }
+
+    private async Task DeleteModule(string id)
+    {
+        if (ModuleRegistry.Remove(id))
+        {
+            try { await Api.DeleteFeatureModuleAsync(id); } catch { }
+            await SaveModules();
+            StateHasChanged();
+        }
+    }
+
+    private void CancelModuleEdit()
+    {
+        _editingModule = null;
+        _moduleDraft = null;
+        StateHasChanged();
+    }
+
+    private async Task SaveModuleEdit()
+    {
+        if (_moduleDraft is null) return;
+        _moduleError = "";
+        var d = _moduleDraft;
+        if (string.IsNullOrWhiteSpace(d.Name)) { _moduleError = "❌ 模块名称不能为空"; return; }
+        if (string.IsNullOrWhiteSpace(d.ApiUrl)) { _moduleError = "❌ API 地址不能为空"; return; }
+
+        if (_editingModule is not null)
+        {
+            // 更新已有模块
+            _editingModule.Name = d.Name.Trim();
+            _editingModule.ApiUrl = d.ApiUrl.Trim();
+            _editingModule.Params = d.Params;
+        }
+        else
+        {
+            // 新建
+            if (!ModuleRegistry.Add(d))
+            {
+                _moduleError = "❌ 模块 Id 冲突，请重试";
+                return;
+            }
+        }
+        await SaveModules();
+        _editingModule = null;
+        _moduleDraft = null;
+        StateHasChanged();
+    }
+
+    /// <summary>补加推荐参数（StationCode/ContainerCode/MsgTime/Warehouse），已存在则不重复添加。</summary>
+    private void AddModuleRecommendedParams()
+    {
+        if (_moduleDraft is null) return;
+        var ps = _moduleDraft.Params;
+        if (!ps.Any(p => p.Name == "StationCode")) ps.Add(new WorkParam { Name = "StationCode", Source = WorkValueSource.StartPoint });
+        if (!ps.Any(p => p.Name == "ContainerCode")) ps.Add(new WorkParam { Name = "ContainerCode", Source = WorkValueSource.TaskContainer });
+        if (!ps.Any(p => p.Name == "MsgTime")) ps.Add(new WorkParam { Name = "MsgTime", Source = WorkValueSource.Now });
+        if (!ps.Any(p => p.Name == "Warehouse")) ps.Add(new WorkParam { Name = "Warehouse", Source = WorkValueSource.TaskWarehouse });
+    }
+
+    private void AddModuleCustomParam()
+    {
+        if (_moduleDraft is null) return;
+        _moduleDraft.Params.Add(new WorkParam { Name = "自定义参数", Source = WorkValueSource.Fixed });
+    }
+
+    private void RemoveModuleParam(WorkParam p)
+    {
+        if (_moduleDraft is null) return;
+        _moduleDraft.Params.Remove(p);
+    }
+
+    /// <summary>持久化功能模块：后端 SQLite（跨浏览器共享）+ localStorage（离线兜底）。</summary>
+    private async Task SaveModules()
+    {
+        try
+        {
+            var list = ModuleRegistry.All.ToList();
+            await Api.SaveFeatureModulesAsync(list);
+            await LocalStore.SetAsync(Js, ModuleStorageKey, System.Text.Json.JsonSerializer.Serialize(list));
+        }
+        catch { }
+    }
+
+    /// <summary>载入功能模块：优先后端 feature_modules 表（跨浏览器共享），后端不可用时回退 localStorage。</summary>
+    private async Task LoadModules()
+    {
+        try
+        {
+            var remote = await Api.GetFeatureModulesAsync();
+            if (remote is { Count: > 0 })
+            {
+                ModuleRegistry.SetCustoms(remote);
+                return;
+            }
+        }
+        catch { /* 后端不可用，回退 localStorage */ }
+
+        try
+        {
+            var json = LocalStore[ModuleStorageKey];
+            if (string.IsNullOrEmpty(json) || json == "null") return;
+            var modules = System.Text.Json.JsonSerializer.Deserialize<List<WcsModule>>(json);
+            if (modules != null) ModuleRegistry.SetCustoms(modules);
+        }
+        catch { }
+    }
+
+    // ── 通用 Mock 入站 ──
+    private async Task LoadMockRules()
+    {
+        try
+        {
+            var remote = await Api.GetMockRulesAsync();
+            if (remote != null) _mockRules = remote;
+        }
+        catch { }
+    }
+    private void CreateMockRule()
+    {
+        _editingMock = null;
+        _mockDraft = new GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto
+        {
+            Id = "MOCK_" + Guid.NewGuid().ToString("N")[..8].ToUpper(),
+            Method = "POST",
+            PathPattern = "/api/v1/station_entry_request",
+            ResponseCode = 200,
+            ResponseBody = "{\"success\":true,\"message\":\"允许进入\",\"msgTime\":\"{{now}}\"}",
+            Enabled = true,
+            Priority = 0,
+            Description = "新建 Mock",
+            Matchers = []
+        };
+        _mockError = "";
+        StateHasChanged();
+    }
+    private void EditMockRule(GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto r)
+    {
+        _editingMock = r;
+        _mockDraft = new GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto
+        {
+            Id = r.Id,
+            Method = r.Method,
+            PathPattern = r.PathPattern,
+            ResponseCode = r.ResponseCode,
+            ResponseBody = r.ResponseBody,
+            Enabled = r.Enabled,
+            Priority = r.Priority,
+            Description = r.Description,
+            AlsoRecord = r.AlsoRecord,
+            BoardSync = r.BoardSync,
+            RequiresApproval = r.RequiresApproval,
+            ApprovalVariable = r.ApprovalVariable,
+            ApprovalTrueValue = r.ApprovalTrueValue,
+            ApprovalFalseValue = r.ApprovalFalseValue,
+            Matchers = r.Matchers.Select(m => new GRCS.Dashboard.Modules.WcsSimulator.Models.MockMatcher { Key = m.Key, Op = m.Op, Expected = m.Expected, Source = m.Source }).ToList()
+        };
+        _mockError = "";
+        StateHasChanged();
+    }
+    private void CancelMockEdit() { _editingMock = null; _mockDraft = null; _mockError = ""; }
+    private async Task SaveMockEdit()
+    {
+        if (_mockDraft == null) return;
+        if (string.IsNullOrWhiteSpace(_mockDraft.PathPattern)) { _mockError = "❌ PathPattern 不能为空"; return; }
+        try { if (!string.IsNullOrWhiteSpace(_mockDraft.ResponseBody)) System.Text.Json.JsonDocument.Parse(_mockDraft.ResponseBody); } catch { _mockError = "❌ ResponseBody 不是合法 JSON"; return; }
+        if (_mockDraft.BoardSync && _mockRules.Any(x => x.Id != _mockDraft.Id && x.BoardSync))
+        {
+            _mockError = "❌ 任务阶段卡只能有一张，请先取消其他卡的「关联任务看板」";
+            return;
+        }
+        if (_mockDraft.BoardSync && _mockDraft.RequiresApproval)
+        {
+            _mockError = "❌ 「关联任务看板」与「需审批」互斥，请只勾选其一";
+            return;
+        }
+        var idx = _mockRules.FindIndex(x => x.Id == _mockDraft.Id);
+        if (idx >= 0) _mockRules[idx] = _mockDraft;
+        else _mockRules.Add(_mockDraft);
+        _mockRules = _mockRules.OrderByDescending(x => x.Priority).ThenBy(x => x.Id).ToList();
+        await SaveMocks();
+        _editingMock = null; _mockDraft = null;
+    }
+    private void RequestDeleteMock(string id, string path) => ShowConfirm("确认删除", $"是否确认删除 Mock 规则「{path}」？", () => DeleteMock(id));
+    private async Task DeleteMock(string id)
+    {
+        _mockRules.RemoveAll(x => x.Id == id);
+        await SaveMocks();
+    }
+    private async Task ToggleMockEnabled(GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto r)
+    {
+        r.Enabled = !r.Enabled;
+        await SaveMocks();
+    }
+    /// <summary>任务阶段卡互斥：勾选时自动取消其他卡的「关联任务看板」，且与「需审批」互斥。</summary>
+    private void ToggleBoardSync(GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto d, ChangeEventArgs e)
+    {
+        var on = e.Value is bool b ? b : (e.Value?.ToString() == "true" || e.Value?.ToString() == "on");
+        if (on)
+        {
+            foreach (var r in _mockRules)
+                if (r.Id != d.Id) r.BoardSync = false;
+            d.BoardSync = true;
+            d.RequiresApproval = false;
+        }
+        else d.BoardSync = false;
+    }
+    /// <summary>「需审批」与「关联任务看板」互斥：勾选审批时自动取消任务阶段卡。</summary>
+    private void ToggleApproval(GRCS.Dashboard.Modules.WcsSimulator.Models.MockRuleDto d, ChangeEventArgs e)
+    {
+        var on = e.Value is bool b ? b : (e.Value?.ToString() == "true" || e.Value?.ToString() == "on");
+        d.RequiresApproval = on;
+        if (on) d.BoardSync = false;
+    }
+    private void AddMockMatcher() => _mockDraft?.Matchers.Add(new GRCS.Dashboard.Modules.WcsSimulator.Models.MockMatcher { Key = "VehicleCode", Source = "body", Op = "equals", Expected = "" });
+    private void RemoveMockMatcher(GRCS.Dashboard.Modules.WcsSimulator.Models.MockMatcher m) => _mockDraft?.Matchers.Remove(m);
+    private void AddMockMatcherPreset()
+    {
+        if (_mockDraft == null) return;
+        if (!_mockDraft.Matchers.Any(m => m.Key == "VehicleCode")) _mockDraft.Matchers.Add(new GRCS.Dashboard.Modules.WcsSimulator.Models.MockMatcher { Key = "VehicleCode", Source = "body", Op = "equals", Expected = "Car_101" });
+        if (!_mockDraft.Matchers.Any(m => m.Key == "StationCode")) _mockDraft.Matchers.Add(new GRCS.Dashboard.Modules.WcsSimulator.Models.MockMatcher { Key = "StationCode", Source = "body", Op = "equals", Expected = "0100000108_1" });
+        if (!_mockDraft.Matchers.Any(m => m.Key == "IsLoaded")) _mockDraft.Matchers.Add(new GRCS.Dashboard.Modules.WcsSimulator.Models.MockMatcher { Key = "IsLoaded", Source = "body", Op = "equals", Expected = "false" });
+    }
+    private async Task SaveMocks()
+    {
+        try { await Api.SaveMockRulesAsync(_mockRules); } catch { }
+        StateHasChanged();
+    }
 
     protected override async Task OnInitializedAsync()
     {
-        SignalAuto.Changed += OnSignalChanged; // 订阅信号自动确认服务（切到其他模块后服务继续后台运行，页面销毁时在 Dispose 退订）
-        StageHub.Changed += OnHubChanged; // 订阅共享轮询器：后端有新阶段事件（含 FINISHED）即防抖重建，替代手动刷新
-        AutoHub.Changed += OnHubChanged; // 进入申请/自动化状态：AutomationHub 1s 共享轮询，多标签页同步
+        await LoadModules();
+        await LoadMockRules();
+        await LoadMockApprovals();
+
+        // 模块执行记录：后端统一执行器写入 ModuleExecLogStore，本页轮询拉取（sinceId 增量）
+        await LoadExecLogAsync();
+        _ = PollExecLogAsync();
+        _ = PollMockApprovalsAsync();
 
         // 读取 localStorage 状态（内存缓存，同步读取，无 JS 边界）
         try
         {
-            string? V(string k) => LocalStore[k] is { } v && v != "null" ? v : null;
-            if (V("grcs_si_auto_mode") is string am) { _autoMode = am == "1"; _autoModeSeeded = true; }
-            if (V("grcs_si_tab") is string tab && tab is "adm" or "arrival" or "removal" or "sorting") _activeSection = tab;
-            if (V("grcs_si_collapsed") is string cl) _panelCollapsed = cl == "1";
-            if (V("grcs_si_del_arrival") is string da) { var l = System.Text.Json.JsonSerializer.Deserialize<List<string>>(da); if (l != null) foreach (var id in l) _deletedArrivalTasks.Add(id); }
-            if (V("grcs_si_del_removal") is string dr) { var l = System.Text.Json.JsonSerializer.Deserialize<List<string>>(dr); if (l != null) foreach (var id in l) _deletedRemovalTasks.Add(id); }
-            if (V("grcs_map_stations") is string mapJ) { var cache = System.Text.Json.JsonSerializer.Deserialize<MapStationCache>(mapJ); _mapStations = cache?.Stations ?? []; }
+            if (LocalStore["grcs_si_collapsed"] is { } cl && cl != "null") _panelCollapsed = cl == "1";
         }
         catch { }
-
-        // 一次性迁移：旧 localStorage 确认集合 → 后端 workflow_state（后端空时播种后清除旧键）
-        _ = MigrateLegacyAsync();
-
-        // 以前端为主：后台把进入申请模式同步给后端（不阻塞页面初始化）
-        if (_autoModeSeeded)
-        {
-            _ = SyncAdmittanceModeAsync();
-        }
-
-        // 懒加载：只拉展开的 section 数据，折叠的等用户展开时再拉
-        await RefreshExpandedSections();
-
-        // 订阅 storage 事件（跨标签页状态变更 → 触发 UI 刷新），替代轮询定时器
-        if (!_storageListenerRegistered)
-        {
-            _storageListenerId = await Js.InvokeAsync<string>("grcsRegisterStorageListener", DotNetObjectReference.Create(this), "si_" + Guid.NewGuid().ToString("N"));
-            _storageListenerRegistered = true;
-        }
+        await Task.CompletedTask;
     }
 
-    /// <summary>JS storage 事件回调，由 index.html 中的 grcsRegisterStorageListener 调用。</summary>
-    [JSInvokable("OnStorageChanged")]
-    public async Task OnStorageChanged(string key, string newValue)
-    {
-        // 存储变更（跨标签页）→ 防抖后统一刷新，避免短时间内多次 StateHasChanged
-        ScheduleRefresh();
-    }
+    // ── 模块执行记录（轮询后端）──
+    private List<ModuleExecLogEntry> _execLog = [];
+    private long _execLogSinceId;
+    private PeriodicTimer? _execLogTimer;
 
-    /// <summary>防抖动刷新调度：多个事件在 500ms 内触发只执行一次刷新。</summary>
-    private void ScheduleRefresh()
+    private async Task PollExecLogAsync()
     {
-        _refreshDebounceTimer?.Dispose();
-        _refreshDebounceTimer = new System.Threading.Timer(async _ =>
-        {
-            await RefreshExpandedSections();
-            await InvokeAsync(StateHasChanged);
-        }, null, TimeSpan.FromMilliseconds(500), Timeout.InfiniteTimeSpan);
-    }
-
-    /// <summary>后台同步进入申请模式到后端（fire-and-forget，避免阻塞页面初始化；走统一信号接口）。</summary>
-    private async Task SyncAdmittanceModeAsync()
-    {
-        try { await WcsApi.PostAsync("/api/wcs/auto/signals", new { admittanceAuto = _autoMode }); } catch { }
-    }
-
-    /// <summary>刷新页面数据。徽章/卡片为纯内存重建（0 HTTP 或缓存读取）。</summary>
-    private async Task RefreshExpandedSections()
-    {
-        if (_refreshing) return;
-        _refreshing = true;
+        _execLogTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(1500));
         try
         {
-            await LoadStatus();               // 进入申请徽章：不依赖当前 tab，任何 tab 下都实时更新
-            if (_activeSection == "adm") await LoadEvents();
-            await RefreshAllAsync();
+            while (await _execLogTimer.WaitForNextTickAsync())
+            {
+                await LoadExecLogAsync();
+                await InvokeAsync(StateHasChanged);
+            }
         }
-        finally { _refreshing = false; }
+        catch (OperationCanceledException) { }
+        catch { }
     }
 
-    private void OnSignalChanged()
+    private async Task LoadExecLogAsync()
     {
-        // 自动确认后立即全量重建（RefreshAllAsync 已 0 HTTP、全内存）：重算待确认徽章 + 刷新行内状态。
-        _ = InvokeAsync(async () =>
+        try
         {
-            await RefreshAllAsync();
-            StateHasChanged();
-        });
+            var resp = await Api.GetModuleExecLogsAsync(_execLogSinceId);
+            if (resp == null) return;
+            if (resp.Entries.Count > 0)
+            {
+                // 后端按 Id 升序返回新条目，prepend 保持最新在前
+                _execLog.InsertRange(0, resp.Entries);
+                if (_execLog.Count > 200) _execLog.RemoveRange(200, _execLog.Count - 200);
+            }
+            _execLogSinceId = resp.MaxId;
+        }
+        catch { }
     }
 
-    /// <summary>hub 拉到新阶段事件（任务 FINISHED、新卡片可生成）→ 防抖重建，卡片/徽章自动跟上。</summary>
-    private void OnHubChanged() => ScheduleRefresh();
+    private async Task ClearModuleLog()
+    {
+        await Api.ClearModuleExecLogsAsync();
+        _execLog.Clear();
+        _execLogSinceId = 0;
+        StateHasChanged();
+    }
 
     public void Dispose()
     {
-        SignalAuto.Changed -= OnSignalChanged;
-        StageHub.Changed -= OnHubChanged;
-        AutoHub.Changed -= OnHubChanged;
-        _refreshDebounceTimer?.Dispose();
-        _refreshDebounceTimer = null;
-        if (_storageListenerRegistered && !string.IsNullOrEmpty(_storageListenerId))
-            try { Js.InvokeVoidAsync("grcsUnregisterStorageListener", _storageListenerId); } catch { }
-        _storageListenerRegistered = false;
-        _storageListenerId = "";
-        _admRefreshTimer?.Dispose(); _arrivalRefreshTimer?.Dispose(); _removalRefreshTimer?.Dispose(); _sortingRefreshTimer?.Dispose();
-        _admClearTimer?.Dispose(); _arrivalClearTimer?.Dispose(); _removalClearTimer?.Dispose(); _sortingClearTimer?.Dispose();
+        _execLogTimer?.Dispose();
+        _mockApprovalTimer?.Dispose();
     }
-
-    // ── 进入申请（数据来自 AutomationHub 1s 共享轮询，多标签页同步；手动操作 POST 后立即补一轮）──
-    private async Task LoadStatus() { _pendingCount = AutoHub.PendingCount; _pollingOk = Health.WcsOnline != false; _lastError = Health.WcsOnline == false ? "无法连接 WCS 后端" : ""; }
-    private async Task LoadEvents() { _events = AutoHub.EntryEvents.ToList(); }
-    private async Task RefreshAdmittanceNow(bool showFeedback = true) { _busy = true; await AutoHub.RefreshNowAsync(); await LoadStatus(); await LoadEvents(); _busy = false; if (showFeedback) ShowFeedback(v => _admRefreshMsg = v, "✓ 刷新成功", ref _admRefreshTimer); }
-    private async Task ToggleMode() { _busy = true; var newMode = !AutoHub.AdmittanceAutoMode; _autoMode = newMode; await LocalStore.SetAsync(Js, "grcs_si_auto_mode", newMode ? "1" : "0"); AutoHub.ApplyAdmittanceMode(newMode); StateHasChanged(); await WcsApi.PostAsync("/api/wcs/auto/signals", new { admittanceAuto = newMode }); _busy = false; }
-    private async Task Decide(string key, bool allow) { _busy = true; await WcsService.DecideEntryAsync("", key, allow); await AutoHub.RefreshNowAsync(); await LoadEvents(); _busy = false; }
-    private async Task DeleteEntry(string key) { await WcsService.DeleteEntryEventAsync("", key); await AutoHub.RefreshNowAsync(); _events.RemoveAll(e => e.Key == key); }
-    private async Task ClearAllEntries() { await WcsService.ClearEntryEventsAsync(""); await AutoHub.RefreshNowAsync(); _events.Clear(); _admConfirming = false; ShowFeedback(v => _admClearMsg = v, "清空完成", ref _admClearTimer); }
-
-    // RefreshTaskCardsAsync 已合并到 RefreshAllAsync → BuildTaskCardsAsync（单趟遍历 + 共享阶段事件）
-
-    /// <summary>段1 任务号 → 段2 任务号（a → b）。非 SimAuto_ 或不以 a 结尾直接返回原值。</summary>
-    private static string Seg2Id(string seg1Id)
-    {
-        if (seg1Id.StartsWith("SimAuto_", StringComparison.OrdinalIgnoreCase) && seg1Id.Length >= 2 && seg1Id[^1] == 'a')
-            return seg1Id[..^1] + "b";
-        return seg1Id;
-    }
-    private async Task RefreshArrivalsNow(bool showFeedback = true) { _arrivalBusy = true; await RefreshAllAsync(); _arrivalBusy = false; if (showFeedback) ShowFeedback(v => _arrivalRefreshMsg = v, "✓ 刷新成功", ref _arrivalRefreshTimer); }
-    private async Task ToggleArrivalMode() => await SignalAuto.ToggleArrivalAsync();
-    private async Task RefreshRemovalsNow(bool showFeedback = true) { _removalBusy = true; await RefreshAllAsync(); _removalBusy = false; if (showFeedback) ShowFeedback(v => _removalRefreshMsg = v, "✓ 刷新成功", ref _removalRefreshTimer); }
-    private async Task ToggleRemovalMode() => await SignalAuto.ToggleRemovalAsync();
-    private async Task ConfirmArrival(ArrivalCard c)
-    {
-        _arrivalBusy = true;
-        var claimed = await ClaimAsync("arrival", c.TaskId, null);
-        if (claimed is null) { _cardError = "无法连接后端，确认失败"; _arrivalBusy = false; return; }
-        if (!claimed.Value)
-        {
-            await RefreshAllAsync();
-            _cardError = "该到达信号已在其他标签页确认";
-            _arrivalBusy = false;
-            return;
-        }
-        var (ok, _, _) = await WcsService.SendContainerReadyAsync("", "1.0", new WcsContainerReadyRequest { TaskId = c.TaskId, StationCode = c.ConveyorCode, ContainerCode = c.ContainerCode, Warehouse = c.Warehouse });
-        if (!ok)
-        {
-            await UnclaimAsync("arrival", c.TaskId);
-            _cardError = "container_ready 发送失败，已回滚确认";
-            await RefreshAllAsync();
-            _arrivalBusy = false;
-            return;
-        }
-        // 乐观更新：立即翻转卡片（不依赖 AutoHub 下一轮轮询）；claim 已落库，1s 后轮询回读保持一致
-        _confirmedTasks.Add(c.TaskId);
-        foreach (var card2 in _arrivalCards) if (card2.TaskId == c.TaskId) card2.Confirmed = true;
-        _pendingArrival = _arrivalCards.Count(x => !x.Confirmed);
-        _cardError = "";
-        _arrivalBusy = false;
-        StateHasChanged();
-    }
-    private async Task ConfirmRemoval(RemovalCard c)
-    {
-        _removalBusy = true;
-        var claimed = await ClaimAsync("removal", c.TaskId, null);
-        if (claimed is null) { _cardError = "无法连接后端，确认失败"; _removalBusy = false; return; }
-        if (!claimed.Value)
-        {
-            await RefreshAllAsync();
-            _cardError = "该移除信号已在其他标签页确认";
-            _removalBusy = false;
-            return;
-        }
-        var (ok, _, _) = await WcsService.SendContainerRemoveAsync("", "1.0", new WcsContainerRemoveRequest { StationCode = c.ConveyorCode, ContainerCode = c.ContainerCode, Warehouse = c.Warehouse });
-        if (!ok)
-        {
-            await UnclaimAsync("removal", c.TaskId);
-            _cardError = "container_remove 发送失败，已回滚确认";
-            await RefreshAllAsync();
-            _removalBusy = false;
-            return;
-        }
-        // 乐观更新：立即翻转卡片（不依赖 AutoHub 下一轮轮询）；claim 已落库，1s 后轮询回读保持一致
-        _confirmedRemovalTasks.Add(c.TaskId);
-        foreach (var card2 in _removalCards) if (card2.TaskId == c.TaskId) card2.Confirmed = true;
-        _pendingRemoval = _removalCards.Count(x => !x.Confirmed);
-        _cardError = "";
-        _removalBusy = false;
-        StateHasChanged();
-    }
-    private async void DeleteArrival(ArrivalCard c) { _arrivalCards.Remove(c); _deletedArrivalTasks.Add(c.TaskId); await SaveArrivalState(); }
-    private async void ClearAllArrivals() { foreach (var c in _arrivalCards) _deletedArrivalTasks.Add(c.TaskId); _arrivalCards.Clear(); await SaveArrivalState(); _arrivalConfirming = false; ShowFeedback(v => _arrivalClearMsg = v, "清空完成", ref _arrivalClearTimer); }
-    private async void DeleteRemoval(RemovalCard c) { _removalCards.Remove(c); _deletedRemovalTasks.Add(c.TaskId); await SaveRemovalState(); }
-    private async void ClearAllRemovals() { foreach (var c in _removalCards) _deletedRemovalTasks.Add(c.TaskId); _removalCards.Clear(); await SaveRemovalState(); _removalConfirming = false; ShowFeedback(v => _removalClearMsg = v, "清空完成", ref _removalClearTimer); }
-    private async Task SaveArrivalState() { _deletedArrivalTasks = PruneDeleted(_deletedArrivalTasks); await LocalStore.SetAsync(Js, "grcs_si_del_arrival", System.Text.Json.JsonSerializer.Serialize(_deletedArrivalTasks)); }
-    private async Task SaveRemovalState() { _deletedRemovalTasks = PruneDeleted(_deletedRemovalTasks); await LocalStore.SetAsync(Js, "grcs_si_del_removal", System.Text.Json.JsonSerializer.Serialize(_deletedRemovalTasks)); }
-    private async Task RestoreArrival(string taskId) { _deletedArrivalTasks.Remove(taskId); await SaveArrivalState(); await RefreshAllAsync(); }
-    private async Task RestoreRemoval(string taskId) { _deletedRemovalTasks.Remove(taskId); await SaveRemovalState(); await RefreshAllAsync(); }
-    private async Task RestoreAllArrivals() { _deletedArrivalTasks.Clear(); await SaveArrivalState(); await RefreshAllAsync(); }
-    private async Task RestoreAllRemovals() { _deletedRemovalTasks.Clear(); await SaveRemovalState(); await RefreshAllAsync(); }
-
-    /// <summary>删除集合只保留最近 300 条，防止无限增长并避免旧任务号被永久抑制（任务号按时间戳生成，越旧越不可能复用）。</summary>
-    private static HashSet<string> PruneDeleted(HashSet<string> set)
-    {
-        if (set.Count <= 300) return set;
-        return set.OrderBy(id => id).TakeLast(300).ToHashSet();
-    }
-
-    // ── 分拣信号 ──
-    private async Task ToggleAutoSend() => await SignalAuto.ToggleSortingAsync(); // 自动开关与自动发送在 SignalAutoService
-    private async Task RefreshSortingNow(bool showFeedback = true) { _busy = true; await RefreshAllAsync(); _busy = false; if (showFeedback) ShowFeedback(v => _sortingRefreshMsg = v, "✓ 刷新成功", ref _sortingRefreshTimer); }
-
-    // ── 分拣编辑弹窗：编辑草稿 → 确认后覆盖表格对应行 ──
-    private SortingCard? _editingCard;
-    private SortingCard? _editDraft;
-
-    private void OpenEdit(SortingCard card)
-    {
-        _editingCard = card;
-        _editDraft = new SortingCard
-        {
-            TaskId = card.TaskId,
-            ReturnTaskId = card.ReturnTaskId,
-            RemoveContainer = card.RemoveContainer,
-            DestStation = card.DestStation,
-            DestArea = card.DestArea,
-        };
-        StateHasChanged();
-    }
-
-    private void CancelEdit()
-    {
-        _editingCard = null;
-        _editDraft = null;
-        StateHasChanged();
-    }
-
-    private void SaveEdit()
-    {
-        if (_editingCard is null || _editDraft is null) return;
-        var d = _editDraft;
-        _editingCard.ReturnTaskId = d.ReturnTaskId ?? "";
-        _editingCard.RemoveContainer = d.RemoveContainer;
-        _editingCard.DestStation = d.DestStation ?? "";
-        _editingCard.DestArea = d.DestArea ?? "";
-        _editingCard = null;
-        _editDraft = null;
-        StateHasChanged();
-    }
-
-    // ScanStages 已合并到 RefreshAllAsync → BuildSortingCards（复用阶段事件，不再额外调 HTTP）
-
-    private async Task SendCard(SortingCard card)
-    {
-        if (card.Status == "Sending") return;
-        card.Status = "Sending";
-        // 先抢占：已发送则阻止（防多标签页重复发送）；value 存编辑参数供刷新后重建
-        var paramsJson = System.Text.Json.JsonSerializer.Serialize(new SortingSendParams
-        {
-            ReturnTaskId = string.IsNullOrWhiteSpace(card.ReturnTaskId) ? card.TaskId + "_R" : card.ReturnTaskId,
-            RemoveContainer = card.RemoveContainer,
-            DestStation = card.DestStation ?? "",
-            DestArea = card.DestArea ?? "",
-        });
-        var claimed = await ClaimAsync("sent", card.TaskId, paramsJson);
-        if (claimed is null) { card.Status = "Failed"; _sortingResp = "无法连接后端，发送失败"; _sortingRespClass = "error"; StateHasChanged(); return; }
-        if (!claimed.Value)
-        {
-            card.Status = "Failed";
-            _sortingResp = "该分拣任务已在其他标签页发送";
-            _sortingRespClass = "error";
-            await RefreshAllAsync();
-            return;
-        }
-        var sendTaskId = string.IsNullOrWhiteSpace(card.ReturnTaskId) ? card.TaskId : card.ReturnTaskId;
-        var (ok, code, json) = await WcsService.SendOperationFinishAsync("", "1.0", new WcsOperationFinishRequest { TaskId = sendTaskId, ContainerCode = card.ContainerCode, RemoveContainer = card.RemoveContainer, StationCode = card.DestStation ?? "", AreaCode = card.DestArea ?? "", Warehouse = card.Warehouse });
-        if (!ok) await UnclaimAsync("sent", card.TaskId);   // 发送失败回滚抢占，允许重试
-        if (ok)
-        {
-            // 回库任务写台账（TaskType=SORTING_RETURN，TaskId 即回库任务号，供任务看板关联显示）
-            var seg1 = (await Ledger.GetAsync()).FirstOrDefault(x => x.TaskId == card.TaskId);
-            var dests = new List<string>();
-            if (!string.IsNullOrWhiteSpace(card.DestStation)) dests.Add(card.DestStation);
-            if (!string.IsNullOrWhiteSpace(card.DestArea)) dests.Add(card.DestArea);
-            await Ledger.AppendAsync([new TaskLedgerEntry
-            {
-                TaskId = sendTaskId,
-                TaskType = "SORTING_RETURN",
-                ContainerCode = seg1?.ContainerCode ?? card.ContainerCode,
-                CargoCode = seg1?.CargoCode ?? "",
-                StationCode = dests,
-                Warehouse = card.Warehouse,
-                Time = DateTime.Now.ToString("O"),
-                Ok = true,
-                StatusCode = code
-            }]);
-        }
-        card.SendTime = DateTime.Now; card.Status = ok ? "Sent" : "Failed";
-        _sortingResp = $"{(ok ? "✅" : "❌")} HTTP {code}\n\n{json}";
-        _sortingRespClass = ok ? "success" : "error";
-        await RefreshAllAsync();
-    }
-
-    private async Task DeleteCard(SortingCard card) { _cards.Remove(card); _knownTasks.Remove(card.TaskId); await WcsService.DeleteTaskStageAsync("", card.TaskId); StageHub.RemoveTask(card.TaskId); StateHasChanged(); }
-    private async Task DeleteAllCards() { foreach (var c in _cards) await WcsService.DeleteTaskStageAsync("", c.TaskId); _cards.Clear(); _knownTasks.Clear(); StageHub.ClearAll(); _sortingConfirming = false; ShowFeedback(v => _sortingClearMsg = v, "清空完成", ref _sortingClearTimer); StateHasChanged(); }
-
-    // ── 信号确认抢占（后端 workflow_state，跨标签页防重复发送）──
-    private async Task<bool?> ClaimAsync(string kind, string taskId, string? value)
-    {
-        try
-        {
-            var resp = await WcsApi.PostAsync<object, ClaimResponse>(
-                $"/api/wcs/signal-confirm/{kind}/{Uri.EscapeDataString(taskId)}", new { value });
-            return resp?.Claimed;
-        }
-        catch { return null; }
-    }
-    private async Task UnclaimAsync(string kind, string taskId)
-        => await WcsApi.DeleteAsync($"/api/wcs/signal-confirm/{kind}/{Uri.EscapeDataString(taskId)}");
-
-    /// <summary>一次性迁移：旧 localStorage 确认集合播种到后端 workflow_state 后清除旧键（Set 幂等，仅补缺）。</summary>
-    private async Task MigrateLegacyAsync()
-    {
-        try
-        {
-            foreach (var (key, kind) in new[] { ("grcs_arrival_confirmed", "arrival"), ("grcs_removal_confirmed", "removal"), ("grcs_ss_sent", "sent") })
-            {
-                var s = LocalStore[key];
-                if (string.IsNullOrEmpty(s) || s == "null") continue;
-                var ids = System.Text.Json.JsonSerializer.Deserialize<List<string>>(s, _jsonOpts) ?? [];
-                foreach (var id in ids)
-                    await ClaimAsync(kind, id, null);
-                await Js.InvokeVoidAsync("grcsStoreRemove", key);
-            }
-            await Js.InvokeVoidAsync("grcsStoreRemove", "grcs_ss_cards");
-        }
-        catch { }
-    }
-
-    // ── 辅助 ──
-    private static string StatusLabel(string s) => s switch { "Pending" => "待确认", "Approved" => "允许待确认", "Allowed" => "已放行", "Rejected" => "已拒绝", _ => s };
-    private static string StatusBadgeClass(string s) => s switch { "Pending" => "badge-warn", "Approved" => "badge-info", "Allowed" => "badge-ok", "Rejected" => "badge-error", _ => "" };
-    private static string CardStatusLabel(string s) => s switch { "Pending" => "待发送", "Sending" => "发送中...", "Sent" => "已发送", "Failed" => "发送失败", _ => s };
-    private static string CardBadgeClass(string s) => s switch { "Pending" => "badge-warn", "Sending" => "badge-selected", "Sent" => "badge-ok", "Failed" => "badge-error", _ => "badge-empty" };
 }

@@ -31,19 +31,10 @@ public interface IWcsService
     Task<(bool Ok, int StatusCode, string Json)> AutoContainerEnterAsync(string baseUrl, string sceneName,
         string prefix = "container", int num = -1, int floor = -1, int type = 1);
 
-    // ── 分拣信号（WCS → GRCS 出站信号）──
+    // ── 通用 HTTP 转发（功能模块 / 信号经此后端代发 GRCS）──
 
-    /// <summary>发送分拣完成通知（/api/v{version}/container_operation_finish）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> SendOperationFinishAsync(
-        string baseUrl, string apiVersion, WcsOperationFinishRequest payload);
-
-    /// <summary>发送货物到达通知（/api/v{version}/container_ready，入库容器到达输送线末端）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> SendContainerReadyAsync(
-        string baseUrl, string apiVersion, WcsContainerReadyRequest payload);
-
-    /// <summary>发送货物移除通知（/api/v{version}/container_remove，出库容器离开输送线末端）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> SendContainerRemoveAsync(
-        string baseUrl, string apiVersion, WcsContainerRemoveRequest payload);
+    /// <summary>通用 HTTP 转发：把 GRCS 相对路径 + HTTP 方法 + 报文交给后端 /api/wcs/forward，由后端注入 Warehouse 并代发 GRCS。</summary>
+    Task<(bool Ok, int StatusCode, string Json)> ForwardAsync(string url, string method, object body);
 
     // ── 任务阶段（WCS 后端管理接口 /api/wcs）──
 

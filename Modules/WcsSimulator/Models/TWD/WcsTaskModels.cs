@@ -1,18 +1,5 @@
 namespace GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 
-/// <summary>预设的任务类型信息。</summary>
-/// <param name="Value">任务类型枚举值，对应 GRCS 后端 RawOrderType</param>
-/// <param name="Label">中文显示名称</param>
-/// <param name="Description">简短描述</param>
-/// <param name="StationCount">需要的站点数量</param>
-/// <param name="StationLabels">每个站点的中文标签</param>
-public record TaskTypeInfo(
-    string Value,
-    string Label,
-    string Description,
-    int StationCount,
-    string[] StationLabels);
-
 /// <summary>
 /// 发送给 GRCS 的任务组，对应后端 ZkWcsTaskGroupInfo。
 /// 数据流：任务下发页/自动服务组装任务组，POST /api/v{version}/task_receive；
@@ -152,31 +139,4 @@ public class VehicleOrderRequest
 
     /// <summary>错误码（协议要求字段，正常下发固定空串）。</summary>
     public string ErrorCode { get; set; } = "";
-}
-
-/// <summary>
-/// 注册所有预设任务类型，匹配 WCS 协议（task_receive 的 TaskType 字段）。
-/// 两段式任务（入库/出库）需按段依次下发：段1 先发，等货物到达/移除信号确认后
-/// 前端再下发段2（"货先走、托后回"）；分拣任务段2 由 RCS 自生成，WCS 只发段1。
-/// </summary>
-public static class TaskTypeRegistry
-{
-    public static readonly TaskTypeInfo[] All =
-    [
-        // ── 入库（两段任务）──
-        new("CONTAINER_CARRY_INBOUND", "入库-段1：搬运空托", "AMR库→输送线",   2, ["空托库位","接驳位"]),
-        new("CARGO_CARRY_INBOUND",     "入库-段2：搬运带载", "输送线→AMR库",   2, ["接驳位","目标库位"]),
-
-        // ── 出库（两段任务）──
-        new("CARGO_CARRY_OUTBOUND",     "出库-段1：搬运带载", "AMR库→输送线",   2, ["货物库位","出库接驳位"]),
-        new("CONTAINER_CARRY_OUTBOUND", "出库-段2：搬运空托", "输送线→AMR库",   2, ["出库接驳位","空托回库位"]),
-
-        // ── 库内分拣 ──
-        new("SORTING",       "分拣-段1：搬运带载", "AMR库→分拣台",  2, ["货物库位","分拣台"]),
-        // 段2 由 RCS 自生成，WCS 不需要发
-        new("SORTING_RETURN", "分拣-回库", "分拣台→AMR库", 1, ["分拣台","回库库位"]),
-
-        // ── 其他 ──
-        new("STOCK_TRANSFER", "移库", "库位→库位", 2, ["源库位","目标库位"]),
-    ];
 }

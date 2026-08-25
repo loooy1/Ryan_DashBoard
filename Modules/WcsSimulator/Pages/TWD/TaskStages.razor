@@ -1,6 +1,7 @@
 @page "/wcs-simulator/task-stages"
 @page "/wcs-simulator/history"
 @inject IWcsService WcsService
+@inject WcsApiClient WcsApi
 @inject IJSRuntime Js
 @inject LocalStoreService LocalStore
 @inject TaskLedgerService Ledger
@@ -44,6 +45,12 @@
     {
         <div class="hint-text" style="color:#f87171;margin:8px 0;">
             ⚠ 无法连接 WCS 后端，请确认 GrcsBackend 已启动。@_lastError
+        </div>
+    }
+    @if (_showMockReminder)
+    {
+        <div class="hint-text" style="color:#f59e0b;background:#422006;padding:8px;border-radius:6px;margin:8px 0;border:1px solid #92400e;">
+            ⚠ 尚未配置任务阶段卡（Mock 卡片勾选「关联任务看板」即为任务阶段卡，URL 任意），阶段上报不会被接收且禁止下发任务。请前往 <a href="/wcs-simulator/signal-interaction" style="color:#f59e0b;text-decoration:underline;">信号交互 → 通用 Mock 入站</a> 勾选「关联任务看板」。
         </div>
     }
     @if (_forceConfirming)
@@ -212,6 +219,7 @@
     private bool _busy;                             // 操作中标志
     private bool _pollingOk = true;                 // 轮询是否成功
     private string _lastError = "";
+    private bool _showMockReminder;                 // task_stage_change 未配置 Mock 时提示
     private Dictionary<string, List<StageChangeEvent>> _groups = [];   // TaskId → 阶段事件（时间正序）
     private Dictionary<string, string> _taskTypeMap = [];              // TaskId → TaskType（从下发历史还原）
     private bool _clearConfirming;                                     // 清空全部确认态
@@ -249,6 +257,7 @@
 
         // 恢复下发历史（台账内存缓存，无 JS 边界）
         try { await RebuildTaskTypeMap(); } catch { }
+        try { await CheckMockConfig(); } catch { }
 
         // 懒加载：只有展开才发 HTTP/读台账，折叠的等用户展开时再拉
         if (!IsCollapsed("ts_list"))
@@ -275,6 +284,7 @@
         {
             await LoadEvents();
             await LoadLedger();
+            await CheckMockConfig();
         }
         finally { _refreshing = false; }
     }
@@ -298,6 +308,16 @@
             }
         }
         catch { }
+    }
+
+    private async Task CheckMockConfig()
+    {
+        try
+        {
+            var mocks = await WcsApi.GetMockRulesAsync();
+            _showMockReminder = mocks == null || !mocks.Any(m => m.Enabled && m.BoardSync);
+        }
+        catch { _showMockReminder = false; }
     }
 
     /// <summary>

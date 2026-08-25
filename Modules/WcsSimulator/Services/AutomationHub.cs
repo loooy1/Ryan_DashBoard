@@ -14,16 +14,15 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 /// </summary>
 public class AutomationHub : IDisposable
 {
-    private const int MaxLogs = 500;
     private readonly WcsApiClient _api;
     private readonly BackendHealthService _health;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _loop;
-    private long _logWatermark;
     private readonly object _lock = new();
 
     public AutoStatusSnapshot Status { get; private set; } = new();
-    public List<AutoLogEntry> Logs { get; } = [];
+    /// <summary>按轮次分组的日志（每轮一个标题，含该轮所有条目）。</summary>
+    public List<LogRoundDto> Rounds { get; } = [];
     /// <summary>选点范围配置快照（随轮询刷新；AutomationTasks 页跨标签页同步用）。</summary>
     public RangeConfigDto Range { get; private set; } = new();
 
@@ -34,10 +33,6 @@ public class AutomationHub : IDisposable
 
     // ── 信号确认状态（kind → 行；跨标签页同步，SignalInteraction 确认/已发送集合的事实源）──
     public Dictionary<string, List<WorkflowStateRowDto>> ConfirmState { get; private set; } = [];
-
-    /// <summary>某 kind 的全部已确认 TaskId 集合。</summary>
-    public HashSet<string> ConfirmedIds(string kind)
-        => ConfirmState.TryGetValue(kind, out var rows) ? rows.Select(r => r.TaskId).ToHashSet(StringComparer.OrdinalIgnoreCase) : [];
 
     /// <summary>分拣 sent 行的编辑参数（未发送/不存在返回 null）。</summary>
     public SortingSendParams? SentParams(string taskId)
@@ -125,25 +120,15 @@ public class AutomationHub : IDisposable
             }
         }
 
-        // 增量日志；后端重启（Id 回绕）时整表替换
-        var resp = await _api.GetAsync<LogsResponse>("/api/wcs/auto/logs?sinceId=" + _logWatermark);
-        if (resp != null)
+        // 按轮次分组的日志（每轮一个标题；任务完成后后端清除该轮）
+        var rounds = await _api.GetAsync<List<LogRoundDto>>("/api/wcs/auto/logs");
+        if (rounds != null)
         {
-            if (resp.MaxId < _logWatermark)
+            lock (_lock)
             {
-                _logWatermark = 0;
-                resp = await _api.GetAsync<LogsResponse>("/api/wcs/auto/logs?sinceId=0");
+                Rounds.Clear();
+                Rounds.AddRange(rounds);
             }
-            if (resp?.Entries is { Count: > 0 })
-            {
-                lock (_lock)
-                {
-                    foreach (var e in resp.Entries)
-                        Logs.Add(new AutoLogEntry { Time = e.Time, Message = e.Message, Color = e.Color });
-                    if (Logs.Count > MaxLogs) Logs.RemoveRange(0, Logs.Count - MaxLogs);
-                }
-            }
-            _logWatermark = Math.Max(_logWatermark, resp?.MaxId ?? 0);
         }
 
         // 健康探测：GRCS 经 WCS 代理轻量探测（后端 2s 短超时）→ 回报共享健康服务
@@ -154,7 +139,7 @@ public class AutomationHub : IDisposable
 
     public void ClearLogs()
     {
-        lock (_lock) { Logs.Clear(); }
+        lock (_lock) { Rounds.Clear(); }
         _ = _api.DeleteAsync("/api/wcs/auto/logs");
     }
 

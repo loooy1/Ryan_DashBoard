@@ -131,6 +131,9 @@ public class RemovalCard
     /// <summary>仓库/场景编码。</summary>
     public string Warehouse { get; set; } = "";
 
+    /// <summary>消息时间（container_remove 报文 MsgTime，可编辑；默认当前时刻）。</summary>
+    public string MsgTime { get; set; } = "";
+
     /// <summary>任务下发时间（历史记录保存的时间文本）。</summary>
     public string Time { get; set; } = "";
 

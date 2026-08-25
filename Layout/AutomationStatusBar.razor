@@ -1,33 +1,30 @@
-@inject AutoRunService Auto
-@inject ContainerTaskService Container
+@inject AutomationHub Hub
 @inject SignalAutoService Signal
 @implements IDisposable
 
 @* ════════════════════════════════════════════════
-   自动化状态栏：固定在主布局底部，跨模块始终可见
-   显示 AutoRunService / ContainerTaskService / SignalAutoService 的运行状态
-   ════════════════════════════════════════════════ *@
+    自动化状态栏：固定在主布局底部，跨模块始终可见
+    显示 自动化模板轮询 / 纯移动循环 / 信号自动 的运行状态（数据来自 AutomationHub 共享轮询中枢）
+    ════════════════════════════════════════════════ *@
 <div class="auto-status-bar @(HasActivity ? "active" : "")">
-    @* ── 自动化：运行状态 ── *@
-    <div class="asb-section" title="自动化轮询储位：
-@(Auto.Running ? "▶ 运行中" : "⏸ 已停止")
-已下发 @Auto.Dispatched 个任务
-间隔 @Auto.Interval 秒">
-        <span class="asb-dot @(Auto.Running ? "on" : "")"></span>
+    @* ── 自动化模板轮询 ── *@
+    <div class="asb-section" title="自动化模板轮询：
+@(Hub.Status.Running ? "▶ 运行中" : "⏸ 已停止")
+模板：@Hub.Status.ActiveTemplateName
+已执行 @Hub.Status.Executed 个
+间隔 @(Hub.Status.Interval / 1000) 秒">
+        <span class="asb-dot @(Hub.Status.Running ? "on" : "")"></span>
         <span class="asb-label">自动化</span>
-        <span class="asb-val @(Auto.Running ? "on" : "")">@(Auto.Running ? "▶ 运行中" : "⏸ 已停止")</span>
+        <span class="asb-val @(Hub.Status.Running ? "on" : "")">@(Hub.Status.Running ? "▶ " + (Hub.Status.ActiveTemplateName ?? "运行中") : "⏸ 已停止")</span>
     </div>
 
     <span class="asb-sep">│</span>
 
-    @* ── 容器：空托数 / 带货托数 ── *@
-    <div class="asb-section" title="容器库存缓存：
-空托 @Container.EmptyPallets 个
-带货托 @Container.LoadedPallets 个">
-        <span class="asb-dot @(Container.Busy ? "busy" : "")"></span>
-        <span class="asb-label">容器</span>
-        <span class="asb-meta">空托 <b>@Container.EmptyPallets</b></span>
-        <span class="asb-meta">带货托 <b>@Container.LoadedPallets</b></span>
+    @* ── 纯移动任务循环 ── *@
+    <div class="asb-section" title="纯移动任务循环：@(Hub.Status.MoveRunning ? "运行中" : "未运行")">
+        <span class="asb-dot @(Hub.Status.MoveRunning ? "on" : "")"></span>
+        <span class="asb-label">移动循环</span>
+        <span class="asb-meta">@(Hub.Status.MoveRunning ? "▶ 运行中" : "⏸ 停止")</span>
     </div>
 
     <span class="asb-sep">│</span>
@@ -46,12 +43,11 @@
 </div>
 
 @code {
-    private bool HasActivity => Auto.Running || Container.Busy || Signal.Running;
+    private bool HasActivity => Hub.Status.Running || Hub.Status.MoveRunning || Signal.Running;
 
     protected override void OnInitialized()
     {
-        Auto.Changed += OnChanged;
-        Container.Changed += OnChanged;
+        Hub.Changed += OnChanged;
         Signal.Changed += OnChanged;
     }
 
@@ -59,8 +55,7 @@
 
     public void Dispose()
     {
-        Auto.Changed -= OnChanged;
-        Container.Changed -= OnChanged;
+        Hub.Changed -= OnChanged;
         Signal.Changed -= OnChanged;
     }
 }
