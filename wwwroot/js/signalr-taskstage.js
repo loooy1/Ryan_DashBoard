@@ -21,6 +21,15 @@ window.grcsTaskStage = (() => {
         connection.on('EventsReset', (evts) => { if (ref) ref.invokeMethodAsync('OnEventsReset', evts); });
         // 单任务删除（其它标签页删除后同步本地缓存）
         connection.on('TaskRemoved', (taskId) => { if (ref) ref.invokeMethodAsync('OnTaskRemoved', taskId); });
+        // 纯移动任务循环状态（后端 MoveLoopRunner 每轮广播；连接建立时回放快照）
+        connection.on('MoveTaskStats', (dto) => { if (ref) ref.invokeMethodAsync('OnMoveTaskStats', dto); });
+        // 归巢模式状态（后端 NestRunner 广播；连接建立时回放快照）
+        connection.on('NestStats', (dto) => { if (ref) ref.invokeMethodAsync('OnNestStats', dto); });
+        // 请求信号记录全量快照（后端 MockApprovalService 每次变更广播；连接建立时回放）
+        connection.on('MockRequestEvents', (evts) => { if (ref) ref.invokeMethodAsync('OnMockRequestEvents', evts); });
+        // 模块执行记录全量回放（连接建立/清空已处理后）与增量单条（后端 ModuleExecLogStore 广播）
+        connection.on('ModuleExecLogsReset', (payload) => { if (ref) ref.invokeMethodAsync('OnModuleExecLogsReset', payload); });
+        connection.on('ModuleExecLogAdded', (entry) => { if (ref) ref.invokeMethodAsync('OnModuleExecLogAdded', entry); });
 
         connection.onreconnecting(() => { if (ref) ref.invokeMethodAsync('OnStateChanged', 'reconnecting'); });
         connection.onreconnected(() => { if (ref) ref.invokeMethodAsync('OnStateChanged', 'connected'); });

@@ -40,13 +40,4 @@ public interface IWcsService
 
     /// <summary>删除指定任务的所有阶段事件（DELETE /api/wcs/task-stages/{taskId}）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> DeleteTaskStageAsync(string baseUrl, string taskId);
-
-    // ── 接驳位审批（WCS 后端管理接口 /api/wcs）──
-
-    /// <summary>批准/拒绝进入申请（POST /api/wcs/decisions/{key}）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> DecideEntryAsync(string baseUrl, string key, bool allow);
-    /// <summary>删除进入申请事件（DELETE /api/wcs/events/{key}）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> DeleteEntryEventAsync(string baseUrl, string key);
-    /// <summary>清空全部进入申请事件（DELETE /api/wcs/events）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> ClearEntryEventsAsync(string baseUrl);
 }

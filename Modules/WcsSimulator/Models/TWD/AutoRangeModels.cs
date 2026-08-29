@@ -5,7 +5,7 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 /// <summary>
 /// 自动化任务选点范围限制（localStorage 键 grcs_auto_range）。
 /// 限制 AutoRunService（轮询储位自动化）与 ContainerTaskService（自动容器任务）的选点范围：
-/// 开启后，接驳位/储位/分拣台候选池只从限定范围内抽取，可配合指定区域/楼层/站点类型使用。
+/// 开启后，候选池只从限定范围内抽取（楼层 + 手动 Mark 白名单；站点类型过滤已废弃）。
 /// 默认关闭（不限制，行为与之前一致）。
 /// </summary>
 public class AutoRangeConfig
@@ -13,7 +13,7 @@ public class AutoRangeConfig
     /// <summary>是否启用范围限制（false = 不限，全地图候选）。</summary>
     public bool Enabled { get; set; }
 
-    /// <summary>站点类型位过滤（0 = 不限类型；按位与匹配 MapStationTypeBits）。</summary>
+    /// <summary>历史遗留字段（不再参与过滤，统一为 0）。</summary>
     public int TypeFilter { get; set; }
 
     /// <summary>楼层过滤（0 = 不限楼层）。</summary>
@@ -24,16 +24,14 @@ public class AutoRangeConfig
 
     /// <summary>
     /// 按范围限制过滤候选站点池。
-    /// 未启用时原样返回（行为不变）；启用后依次按 类型位 + 楼层 + Mark 白名单 收窄。
-    /// 手动白名单与类型/楼层为 AND 关系（同时满足才保留）。
+    /// 未启用时原样返回（行为不变）；启用后依次按 楼层 + Mark 白名单 收窄。
+    /// 手动白名单与楼层为 AND 关系（同时满足才保留）。
     /// </summary>
     public List<MapStationLite> ApplyTo(IEnumerable<MapStationLite> stations)
     {
         if (!Enabled) return stations.ToList();
 
         IEnumerable<MapStationLite> pool = stations;
-        if (TypeFilter != 0)
-            pool = pool.Where(s => (s.StationType & TypeFilter) != 0);
         if (FloorFilter != 0)
             pool = pool.Where(s => s.Floor == FloorFilter);
         if (Marks.Count > 0)
@@ -57,7 +55,7 @@ public class AutoRangeConfig
 
 /// <summary>
 /// 站点地图框选器（StationMapPicker）传给 JS 的配置。
-/// 数据口径：Stations = 当前范围卡片的 TypeFilter 命中的全部站点（含禁用，禁用置灰不可选）；
+/// 数据口径：Stations = 全部站点（含禁用，禁用置灰不可选）；
 /// Floors 取启用站点楼层去重排序；Preselected = 既有 Mark 白名单（打开时预选中，增量编辑）。
 /// 白名单自身不参与候选过滤（否则越选越窄），关闭回写时 Mark 与地图大小写不敏感匹配。
 /// </summary>

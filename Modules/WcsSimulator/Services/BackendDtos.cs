@@ -12,6 +12,11 @@ public class AutoStatusSnapshot
     public string Status { get; set; } = "";
     public bool MoveRunning { get; set; }
     public string MoveTabId { get; set; } = "";
+    public int MoveTotal { get; set; }
+    public int MoveOk { get; set; }
+    public int MoveFail { get; set; }
+    public string MoveLastError { get; set; } = "";
+    public bool NestRunning { get; set; }
     public List<AutoTemplateDto> Templates { get; set; } = [];
     public WcsSettingsDto Settings { get; set; } = new();
     public SignalFlagsDto Signals { get; set; } = new();
@@ -32,8 +37,11 @@ public class AutoStepDto
     public string PalletFilter { get; set; } = "Empty"; // Empty | Loaded | Any
     public string TemplateValue { get; set; } = "";    // 任务模板 Value（RunTemplate 用）
     public string Label { get; set; } = "";
-    /// <summary>容器是否使用前置步骤挑选的托盘/货物号：true（默认）取前置；false 按模板自动生成。</summary>
+    /// <summary>容器是否使用前置步骤挑选的托盘/货物号：true（默认）取前置；false 按模板自动生成。
+    /// 旧模板字段（PickedStepIndex 未设置时生效）；新版请用 PickedStepIndex 精确指定引用步骤。</summary>
     public bool UsePickedContainer { get; set; } = true;
+    /// <summary>容器来源：0=自动生成；-1=最近前置挑选（旧逻辑）；&gt;0=引用前置第 N 步挑选的容器号。</summary>
+    public int PickedStepIndex { get; set; } = 0;
     /// <summary>起点是否取自前置步骤的终点：true（默认）取上一步终点（选托盘时即托盘所在站）；false 按模板起点类型在范围内自行选点。</summary>
     public bool UsePickedStart { get; set; } = true;
     /// <summary>等待完成再继续下一步：含终点模块时强制等待模块 success；无终点模块时按 FINISHED 等待。默认开启，可单步关闭。</summary>
@@ -60,12 +68,64 @@ public class MoveLeaseResult
     public string? Reason { get; set; }
 }
 
-/// <summary>单条移动任务下发结果（POST /api/wcs/auto/move/dispatch → GRCS /api/RawOrder/ChangeFloor）。</summary>
-public class MoveDispatchResult
+/// <summary>纯移动任务循环状态（后端 SignalR「MoveTaskStats」广播 + GET status 轮询字段）。</summary>
+public class MoveTaskStatsDto
+{
+    public bool Running { get; set; }
+    public string TabId { get; set; } = "";
+    public int Interval { get; set; }
+    public int Seq { get; set; }
+    public int Total { get; set; }
+    public int Ok { get; set; }
+    public int Fail { get; set; }
+    public string LastError { get; set; } = "";
+    public string LastStation { get; set; } = "";
+}
+
+/// <summary>归巢模式配置（巢点站点 Mark）。</summary>
+public class NestConfigDto
+{
+    public string? NestMark { get; set; }
+}
+
+/// <summary>归巢模式状态（后端 SignalR「NestStats」广播 + GET nest/status）。</summary>
+public class NestStatsDto
+{
+    public bool Running { get; set; }
+    public string? LastRunAt { get; set; }
+    public List<string> ReadyVehicles { get; set; } = [];
+    public int Ok { get; set; }
+    public int Fail { get; set; }
+    public string? LastError { get; set; }
+}
+
+/// <summary>归巢执行结果（POST /api/wcs/auto/nest/run）。</summary>
+public class NestRunResult
 {
     public bool Success { get; set; }
-    public int Code { get; set; }
-    public string Json { get; set; } = "";
+    public string? Reason { get; set; }
+}
+
+/// <summary>异常记录（AGV/软件异常台账，纯 HTTP 读写）。</summary>
+public class ExceptionRecordDto
+{
+    public long Id { get; set; }
+    /// <summary>发生时间（yyyy-MM-dd HH:mm:ss）。</summary>
+    public string HappenedAt { get; set; } = "";
+    /// <summary>车号（可空，记录是哪台车出的问题）。</summary>
+    public string? VehicleCode { get; set; }
+    /// <summary>现象。</summary>
+    public string Phenomenon { get; set; } = "";
+    /// <summary>原因。</summary>
+    public string Reason { get; set; } = "";
+    /// <summary>责任部门（必填，RCS / WCS / Quicktron）。</summary>
+    public string ResponsibleDept { get; set; } = "";
+    /// <summary>是否解决。</summary>
+    public bool Resolved { get; set; }
+    /// <summary>最近复现时间（可空）。</summary>
+    public string? ReproducedAt { get; set; }
+    /// <summary>复现次数。</summary>
+    public int ReproduceCount { get; set; }
 }
 
 /// <summary>自动化日志条目（后端日志流映射为前端展示格式）。</summary>
@@ -87,13 +147,25 @@ public class LogRoundDto
     public List<AutoLogEntry> Entries { get; set; } = [];
 }
 
-/// <summary>库存分类汇总（纯空托 / 带货托 / 纯货物 / 锁定中）。</summary>
+/// <summary>库存明细条目（仅列出有货/托的储位，不包含空储位）。</summary>
+public class InventoryDetailItem
+{
+    public string Code { get; set; } = "";
+    public string? Station { get; set; }
+    public string? CargoCode { get; set; }
+}
+
+/// <summary>库存分类汇总 + 明细（纯空托 / 带货托 / 纯货物 / 锁定中=移动单元数）。</summary>
 public class InventorySummaryDto
 {
     public int Empty { get; set; }
     public int Loaded { get; set; }
     public int Cargo { get; set; }
     public int Locked { get; set; }
+    public List<InventoryDetailItem> EmptyItems { get; set; } = [];
+    public List<InventoryDetailItem> LoadedItems { get; set; } = [];
+    public List<InventoryDetailItem> CargoItems { get; set; } = [];
+    public List<InventoryDetailItem> LockedItems { get; set; } = [];
 }
 
 /// <summary>准入状态（GET /api/wcs/status：自动模式 + 待确认数）。</summary>

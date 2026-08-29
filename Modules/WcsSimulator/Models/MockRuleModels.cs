@@ -11,6 +11,8 @@ public class MockMatcher
 public class MockRuleDto
 {
     public string Id { get; set; } = "";
+    /// <summary>名称（用于列表/记录检索显示；可空）。</summary>
+    public string Name { get; set; } = "";
     public string Method { get; set; } = "POST";
     public string PathPattern { get; set; } = "";
     public List<MockMatcher> Matchers { get; set; } = [];

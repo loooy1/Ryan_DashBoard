@@ -91,16 +91,7 @@ public class MockWcsService : IWcsService
 
     // ── 接驳位审批（WCS 后端管理接口 /api/wcs）──
 
-    public async Task<(bool Ok, int StatusCode, string Json)> DecideEntryAsync(string baseUrl, string key, bool allow)
-        => await PostRawAsync("/api/wcs/decisions/" + Uri.EscapeDataString(key), new { allow });
-
-    public async Task<(bool Ok, int StatusCode, string Json)> DeleteEntryEventAsync(string baseUrl, string key)
-        => await DeleteRawAsync("/api/wcs/events/" + Uri.EscapeDataString(key));
-
-    public async Task<(bool Ok, int StatusCode, string Json)> ClearEntryEventsAsync(string baseUrl)
-        => await DeleteRawAsync("/api/wcs/events");
-
-    // ── 通用方法 ──
+// ── 通用方法 ──
 
     /// <summary>调 GRCS 代理：后端返回 { ok, code, json }，解析为调用方 (Ok, StatusCode, Json)。</summary>
     private async Task<(bool Ok, int StatusCode, string Json)> ProxyPostAsync<T>(string path, T payload)

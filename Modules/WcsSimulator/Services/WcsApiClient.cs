@@ -65,7 +65,7 @@ public class WcsApiClient
             return JsonSerializer.Deserialize<T>(json, JsonOpts);
         }
         catch { return default; }
-    }
+    } 
 
     public async Task<T?> PostAsync<TReq, T>(string path, TReq body)
     {
@@ -182,6 +182,12 @@ public class WcsApiClient
     public async Task<bool> ClearModuleExecLogsAsync()
     {
         return await DeleteAsync("/api/wcs/modules/logs");
+    }
+
+    /// <summary>重试单条模块执行记录（后端恢复任务上下文重新 POST，MsgTime 用当前时间；新记录经 SignalR 推送）。</summary>
+    public async Task<bool> RetryModuleLogAsync(long id)
+    {
+        return (await PostAsync<object, SaveResponse>($"/api/wcs/modules/logs/{id}/retry", new { })) is { Success: true };
     }
 
     // ── 通用 Mock 规则（入站可配）──

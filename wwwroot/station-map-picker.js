@@ -211,8 +211,14 @@
                 const isHit = inBox ? rectContains(drag, v.sx, v.sy) : false;
                 const isHover = hover !== null && hover.Mark === v.p.Mark;
                 const col = primaryType(v.p.StationType).color;
-                drawPoint(v.p, v.sx, v.sy, isSel || isHit, col, isHit || isSel || isHover ? 6 : 4.5,
-                    isHover ? 2 : 1.6, isSel ? '#67e8f9' : 'rgba(255,255,255,0.7)', isSel || isHit || isHover);
+                if (isSel)
+                    drawPoint(v.p, v.sx, v.sy, true, col, 8.5, 3, '#ffffff', true);
+                else if (isHit)
+                    drawPoint(v.p, v.sx, v.sy, true, col, 7, 2, 'rgba(255,255,255,0.85)', true);
+                else if (isHover)
+                    drawPoint(v.p, v.sx, v.sy, false, col, 5.5, 2, '#ffffff', false);
+                else
+                    drawPoint(v.p, v.sx, v.sy, false, col, 4.5, 1.6, 'rgba(255,255,255,0.7)', false);
             }
 
             // 橡皮筋矩形
@@ -230,6 +236,13 @@
         }
 
         function drawPoint(p, sx, sy, highlight, color, radius, ringWidth, ringColor, withLabel) {
+            if (highlight) {
+                // 选中/命中：先画外光晕（半透明青环），远看即与未选点区分
+                ctx.beginPath();
+                ctx.arc(sx, sy, radius + 4, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(103,232,249,0.25)';
+                ctx.fill();
+            }
             ctx.beginPath();
             ctx.arc(sx, sy, radius, 0, Math.PI * 2);
             ctx.fillStyle = color;

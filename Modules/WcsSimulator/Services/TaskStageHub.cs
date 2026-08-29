@@ -66,8 +66,50 @@ public class TaskStageHub : IDisposable
     /// <summary>已 FINISHED 的任务号集合（大小写不敏感）。</summary>
     public HashSet<string> FinishedTaskIds => _finished;
 
+    /// <summary>纯移动任务循环状态（后端 MoveLoopRunner SignalR 广播，本标签页实时快照）。</summary>
+    public MoveTaskStatsDto? MoveStats { get; private set; }
+
+    /// <summary>纯移动任务循环状态变化时触发（MoveLoopService 订阅后转发给页面/状态栏）。</summary>
+    public event Action? MoveStatsChanged;
+
+    /// <summary>归巢模式状态（后端 NestRunner SignalR 广播，本标签页实时快照）。</summary>
+    public NestStatsDto? NestStats { get; private set; }
+
+    /// <summary>归巢模式状态变化时触发。</summary>
+    public event Action? NestStatsChanged;
+
     /// <summary>新记录合并/状态变化时触发（订阅者据此刷新 UI / 唤醒等待者）。</summary>
     public event Action? Changed;
+
+    // ── 请求信号（Mock 审批事件，后端 MockApprovalService 每次变更广播全量快照）──
+    private const int MaxMockEvents = 500;
+    private List<WcsApiClient.MockApprovalEvent> _mockEvents = [];
+
+    /// <summary>请求信号事件缓存（后端快照，最新在前）。</summary>
+    public IReadOnlyList<WcsApiClient.MockApprovalEvent> MockApprovalEvents
+    {
+        get { lock (_lock) return _mockEvents.ToList(); }
+    }
+
+    /// <summary>请求信号事件变化时触发（信号交互页订阅后读缓存渲染）。</summary>
+    public event Action? MockApprovalEventsChanged;
+
+    // ── 模块执行记录（后端 ModuleExecLogStore 增量单条 + 连接回放全量）──
+    private const int MaxExecLog = 200;
+    private List<ModuleExecLogEntry> _execLog = [];
+    private long _execLogMaxId;
+
+    /// <summary>模块执行记录缓存（最新在前，上限 200 条）。</summary>
+    public IReadOnlyList<ModuleExecLogEntry> ExecLogEntries
+    {
+        get { lock (_lock) return _execLog.ToList(); }
+    }
+
+    /// <summary>已见最大条目 Id（重连回放后重置为后端水位）。</summary>
+    public long ExecLogMaxId { get { lock (_lock) return _execLogMaxId; } }
+
+    /// <summary>模块执行记录变化时触发。</summary>
+    public event Action? ExecLogChanged;
 
     public TaskStageHub(IJSRuntime js, LocalStoreService store)
     {
@@ -136,6 +178,72 @@ public class TaskStageHub : IDisposable
     {
         if (string.IsNullOrEmpty(taskId)) return;
         RemoveTask(taskId);
+    }
+
+    /// <summary>后端广播：纯移动任务循环状态（每轮统计/启停/错误）。</summary>
+    [JSInvokable]
+    public void OnMoveTaskStats(MoveTaskStatsDto dto)
+    {
+        if (dto == null) return;
+        MoveStats = dto;
+        MoveStatsChanged?.Invoke();
+    }
+
+    /// <summary>后端广播：归巢模式状态（执行中/就绪车/统计/错误）。</summary>
+    [JSInvokable]
+    public void OnNestStats(NestStatsDto dto)
+    {
+        if (dto == null) return;
+        NestStats = dto;
+        NestStatsChanged?.Invoke();
+    }
+
+    /// <summary>后端广播：请求信号记录全量快照（每次变更/连接建立回放）→ 整表替换（天然无重复）。</summary>
+    [JSInvokable]
+    public void OnMockRequestEvents(List<WcsApiClient.MockApprovalEvent>? events)
+    {
+        lock (_lock)
+        {
+            _mockEvents = events ?? [];
+            if (_mockEvents.Count > MaxMockEvents) _mockEvents.RemoveRange(0, _mockEvents.Count - MaxMockEvents);
+        }
+        MockApprovalEventsChanged?.Invoke();
+    }
+
+    /// <summary>后端广播：模块执行记录全量回放（连接建立/重连对账）→ 整表替换，清除重复残留。</summary>
+    [JSInvokable]
+    public void OnModuleExecLogsReset(ExecLogsResetPayload? payload)
+    {
+        if (payload == null) return;
+        lock (_lock)
+        {
+            _execLog = payload.Entries ?? [];
+            if (_execLog.Count > MaxExecLog) _execLog.RemoveRange(0, _execLog.Count - MaxExecLog);
+            _execLogMaxId = payload.MaxId;
+        }
+        ExecLogChanged?.Invoke();
+    }
+
+    /// <summary>后端广播：单条新模块执行记录（插头部；按 Id 判重，防迟到/重复推送）。</summary>
+    [JSInvokable]
+    public void OnModuleExecLogAdded(ModuleExecLogEntry entry)
+    {
+        if (entry == null) return;
+        lock (_lock)
+        {
+            if (_execLog.Any(x => x.Id == entry.Id)) return;
+            _execLog.Insert(0, entry);
+            if (_execLog.Count > MaxExecLog) _execLog.RemoveRange(MaxExecLog, _execLog.Count - MaxExecLog);
+            if (entry.Id > _execLogMaxId) _execLogMaxId = entry.Id;
+        }
+        ExecLogChanged?.Invoke();
+    }
+
+    /// <summary>后端 ModuleExecLogsReset 回放负载（{maxId, entries}，JS 侧 camelCase → 本端大小写不敏感匹配）。</summary>
+    public class ExecLogsResetPayload
+    {
+        public long MaxId { get; set; }
+        public List<ModuleExecLogEntry> Entries { get; set; } = [];
     }
 
     /// <summary>JS 回报连接状态：connected / reconnecting / disconnected。</summary>

@@ -26,11 +26,6 @@ public class AutomationHub : IDisposable
     /// <summary>选点范围配置快照（随轮询刷新；AutomationTasks 页跨标签页同步用）。</summary>
     public RangeConfigDto Range { get; private set; } = new();
 
-    // ── 进入申请（信号交互页「进入信号」多标签页同步）──
-    public int PendingCount { get; private set; }
-    public bool AdmittanceAutoMode { get; private set; }
-    public List<EntryRequestEvent> EntryEvents { get; } = [];
-
     // ── 信号确认状态（kind → 行；跨标签页同步，SignalInteraction 确认/已发送集合的事实源）──
     public Dictionary<string, List<WorkflowStateRowDto>> ConfirmState { get; private set; } = [];
 
@@ -86,13 +81,6 @@ public class AutomationHub : IDisposable
         Changed?.Invoke();
     }
 
-    /// <summary>乐观更新：进入申请自动/手动模式 POST 后立即反映到快照，不等下一轮轮询。</summary>
-    public void ApplyAdmittanceMode(bool mode)
-    {
-        AdmittanceAutoMode = mode;
-        Changed?.Invoke();
-    }
-
     private async Task PollAsync()
     {
         var st = await _api.GetAsync<AutoStatusSnapshot>("/api/wcs/auto/status");
@@ -102,23 +90,13 @@ public class AutomationHub : IDisposable
         var range = await _api.GetAsync<RangeConfigDto>("/api/wcs/auto/range");
         if (range != null) Range = range;
 
-        // 进入申请（信号交互页徽章 + 事件表）；同时回报后端健康（比 BackendHealthService 的 15s 探测更实时）
+        // 进入申请状态（用于后端健康判定；进入信号已由 MockApprovalService 取代）
         var adm = await _api.GetAsync<AdmittanceStatusDto>("/api/wcs/status");
-        if (adm != null) { PendingCount = adm.PendingCount; AdmittanceAutoMode = adm.AutoMode; }
         _health.ReportWcs(adm != null);
 
         // 信号确认状态（跨标签页同步，SignalInteraction 事实源）
         var wf = await _api.GetAsync<Dictionary<string, List<WorkflowStateRowDto>>>("/api/wcs/signal-confirm");
         if (wf != null) ConfirmState = wf;
-        var evts = await _api.GetAsync<List<EntryRequestEvent>>("/api/wcs/events");
-        if (evts != null)
-        {
-            lock (_lock)
-            {
-                EntryEvents.Clear();
-                EntryEvents.AddRange(evts);
-            }
-        }
 
         // 按轮次分组的日志（每轮一个标题；任务完成后后端清除该轮）
         var rounds = await _api.GetAsync<List<LogRoundDto>>("/api/wcs/auto/logs");

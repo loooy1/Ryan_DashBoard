@@ -188,6 +188,8 @@ html, body, #app {
     font-size: 0.85rem; font-weight: 600; color: #e2e8f0;
     margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
 }
+.sub-header.collapsible { cursor: pointer; user-select: none; }
+.sub-header.collapsible:hover { color: #38bdf8; }
 .section-divider { height: 1px; background: #334155; margin: 18px 0; }
 
 .form-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -269,6 +271,19 @@ html, body, #app {
 }
 .toggle-switch.on .toggle-thumb { transform: translateX(16px); }
 
+/* ── Shared: checkbox slide switch + form sections (SignalInteraction / ExceptionRecords) ── */
+.switch { position: relative; width: 40px; height: 22px; flex: none; display: inline-block; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; inset: 0; background: #334155; border-radius: 22px; transition: .2s; cursor: pointer; border: 1px solid #475569; }
+.slider:before { content: ""; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; background: #94a3b8; border-radius: 50%; transition: .2s; }
+.switch input:checked + .slider { background: #3b82f6; border-color: #3b82f6; }
+.switch input:checked + .slider:before { transform: translateX(18px); background: #fff; }
+.option-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid #1e293b; border-radius: 8px; background: #0f172a; margin-bottom: 8px; }
+.option-row .option-title { font-weight: 600; color: #e2e8f0; font-size: 0.85rem; }
+.option-row .option-desc { color: #64748b; font-size: 0.75rem; margin-top: 2px; }
+.form-section-title { margin: 14px 0 8px; padding: 5px 10px; background: linear-gradient(90deg, rgba(59,130,246,.12), transparent); border-left: 3px solid #3b82f6; border-radius: 4px; color: #93c5fd; font-weight: 600; font-size: 0.8rem; letter-spacing: .5px; }
+.req-star { color: #f87171; }
+
 /* ── Form controls ── */
 .form-group { display: flex; flex-direction: column; gap: 5px; }
 .form-group label { font-size: 0.78rem; font-weight: 500; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.03em; }
@@ -279,6 +294,8 @@ input, select, textarea {
     transition: border-color 0.15s; outline: none; width: 100%;
 }
 input:focus, select:focus, textarea:focus { border-color: #38bdf8; }
+input[type=date] { min-height: 38px; }
+input[type=date]::-webkit-calendar-picker-indicator { cursor: pointer; filter: invert(0.7); }
 select { cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%2394a3b8' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e"); background-position: right 8px center; background-repeat: no-repeat; background-size: 20px; padding-right: 32px; }
 input[readonly] { opacity: 0.6; cursor: default; }
 input:disabled { opacity: 0.5; cursor: not-allowed; background: #1a2332; }
