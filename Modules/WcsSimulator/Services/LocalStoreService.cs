@@ -80,5 +80,7 @@ public class LocalStoreService
         "grcs_td_templates", "grcs_si_modules",
         // 地图缓存（过渡期只读，验收后删）
         "grcs_map_stations",
+        // 归巢车队（「归巢车队」页勾选，自动化任务页归巢执行用）
+        "grcs_nest_fleet",
     ];
 }

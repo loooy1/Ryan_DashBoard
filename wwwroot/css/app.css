@@ -774,6 +774,46 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
     border-top: 1px solid #1e293b; background: #0c1222;
 }
 
+/* ── 归巢两步地图选择器（NestMapPicker）确认总结面板 ── */
+.smp-summary {
+    position: absolute; inset: 0; display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; padding: 24px;
+    background: rgba(11, 18, 32, 0.92);
+}
+.smp-sum-head { text-align: center; }
+.smp-sum-title { font-size: 1.05rem; font-weight: 700; color: #e2e8f0; }
+.smp-sum-sub { margin-top: 4px; font-size: 0.72rem; color: #64748b; }
+.smp-sum-card {
+    width: min(620px, 92%); background: #0f172a; border: 1px solid #334155;
+    border-radius: 12px; padding: 12px 14px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.smp-sum-card.fleet { border-left: 3px solid #38bdf8; }
+.smp-sum-card.nest { border-left: 3px solid #4ade80; }
+.smp-sum-card-head { display: flex; align-items: center; gap: 8px; }
+.smp-sum-card-name { font-weight: 600; font-size: 0.8rem; color: #e2e8f0; }
+.smp-sum-count {
+    margin-left: auto; font-weight: 700; font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+}
+.smp-sum-card.fleet .smp-sum-count { color: #38bdf8; }
+.smp-sum-card.nest .smp-sum-count { color: #4ade80; }
+.smp-sum-chips {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+    max-height: 96px; overflow: auto;
+}
+.smp-sum-chip {
+    font-size: 0.68rem; font-family: Consolas, monospace; color: #cbd5e1;
+    background: rgba(148, 163, 184, 0.12); border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 999px; padding: 2px 9px; white-space: nowrap;
+}
+.smp-sum-empty { font-size: 0.72rem; color: #64748b; margin-top: 8px; }
+.smp-sum-warn {
+    margin-top: 8px; font-size: 0.72rem; color: #fbbf24;
+    background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: 8px; padding: 6px 10px;
+}
+.smp-sum-btns { display: flex; gap: 10px; margin-top: 4px; }
+
 #blazor-error-ui { color-scheme: dark; background: #451a1a; bottom: 0; box-shadow: 0 -1px 2px #00000033; display: none; left: 0; padding: 0.6rem 1.25rem; position: fixed; width: 100%; z-index: 1000; }
 #blazor-error-ui .dismiss { cursor: pointer; position: absolute; right: 0.75rem; top: 0.5rem; }
 /* ���� �Զ���ģ��༭�� ���� */

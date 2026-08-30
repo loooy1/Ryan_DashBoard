@@ -225,7 +225,8 @@
                                                         @for (var p = 0; p < i; p++)
                                                         {
                                                             <option value="@(p + 1)">第 @(p + 1) 步：@StepPickDesc(_editing.Steps[p])</option>
-                                                        }
+}
+
                                                     </select>
                                                 </label>
                                                 <label class="step-toggle" title="起点是否取自前置步骤的终点（链路衔接）；关闭则按模板起点类型在选点范围内自行选点。">
@@ -308,41 +309,54 @@
     }
     else
     {
-        @* ── 归巢模式（一次性批量下发：查就绪车 → 巢点附近普通路点 → 逐台指定车 MOVE_ONLY）── *@
-        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
-            <div class="form-group" style="flex:1;min-width:200px;max-width:320px;">
-                <label>巢点站点 Mark</label>
-                <input @bind="_nestMark" placeholder="如：Nest01（枢纽站点，执行时自动选它附近的普通道路点）" />
-            </div>
-            <button class="btn btn-outline" @onclick="SaveNestConfig" disabled="@(_nestRunning || string.IsNullOrWhiteSpace(_nestMark))">💾 保存巢点</button>
-            <span class="hint-text" style="padding-bottom:6px;">巢点 = 归巢枢纽，执行时自动取巢点同层优先的普通道路点（不够补其他楼层），有几台就绪车就取几个点，一台车一个目标。</span>
+        @* ── 归巢模式（两步地图：先选车队再选巢区 → 持续调度直到区内点全被车占用）── *@
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <button class="btn btn-primary" @onclick="OpenNestPicker" disabled="@(_mapStations.Count == 0 || _nestRunning)" title="一张地图两步选：① 框选车队（站点为背景）→ ② 框选巢区（车辆为背景）→ 总结确认后一并保存">🎯 选择车队与巢区</button>
+            <span class="hint-text" style="margin:0;">一张地图两步完成：先框选车队（仅绿色就绪车可选），再框选巢区；确认后一并保存。</span>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+            <label style="margin:0;white-space:nowrap;">🚗 车队</label>
+            <span class="addr-badge" style="background:rgba(56,189,248,0.15);color:#7dd3fc;">@_fleetPreview</span>
+            <span class="hint-text" style="margin:0;">不选则执行时自动捕获当前就绪车。</span>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <label style="margin:0;white-space:nowrap;">🗺️ 巢区</label>
+            <span class="addr-badge" style="background:rgba(34,197,94,0.15);color:#6ee7b7;">@_nestPreview</span>
+            <span class="hint-text" style="margin:0;">巢区 = 框选区域内全部启用站点（不限类型）。</span>
         </div>
 
         <div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;align-items:center;">
             <button class="btn btn-primary" @onclick="RunNest" disabled="@_nestRunning">
-                @(_nestRunning ? "⏳ 归巢执行中…" : "🚀 执行归巢")
+                @(_nestRunning ? "⏳ 归巢执行中…" : $"🚀 执行归巢{(_selectedVehicles.Count > 0 ? $"（{_selectedVehicles.Count} 台）" : "")}")
             </button>
-            <span class="hint-text" style="margin:0;">查询 GRCS 全部车辆 → 就绪车（在线 + 空闲 + 自动 + 无任务）逐台下发指定车 MOVE_ONLY 归巢任务（明细见系统日志）</span>
+            @if (_nestRunning)
+            {
+                <button class="btn btn-danger" @onclick="StopNest">⏹ 停止归巢</button>
+            }
+            <span class="hint-text" style="margin:0;">只调度锁定车队（车少于目标点时占多少算多少）；框选 N 个点最多 N 台车在途，每 8 秒巡检，点满自动结束</span>
         </div>
 
-        @if (_nestRunning || (StageHub.NestStats != null && StageHub.NestStats.ReadyVehicles.Count > 0))
+        @if (_nestRunning || (StageHub.NestStats != null && StageHub.NestStats.PoolVehicles.Count > 0))
         {
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px;border-top:1px dashed #334155;padding-top:10px;">
                 <span class="badge-info">归巢状态</span>
                 <span class="hint-text" style="margin:0;">
-                    上次执行 <b style="color:#38bdf8">@(StageHub.NestStats?.LastRunAt ?? "—")</b> ｜ 就绪车 <b style="color:#38bdf8">@((StageHub.NestStats?.ReadyVehicles ?? []).Count)</b> 台 ｜ 成功 <b style="color:#4ade80">@((StageHub.NestStats?.Ok ?? 0))</b> ｜ 失败 <b style="color:#f87171">@((StageHub.NestStats?.Fail ?? 0))</b>
+                    上次执行 <b style="color:#38bdf8">@(StageHub.NestStats?.LastRunAt ?? "—")</b> ｜ 巢区目标点 <b style="color:#38bdf8">@(StageHub.NestStats?.TargetTotal ?? 0)</b> 个 ｜ 已占用 <b style="color:#4ade80">@(StageHub.NestStats?.TargetOccupied ?? 0)</b> ｜ 在途 <b style="color:#fbbf24">@(StageHub.NestStats?.TargetAssigned ?? 0)</b> ｜ 成功 <b style="color:#4ade80">@((StageHub.NestStats?.Ok ?? 0))</b> ｜ 失败 <b style="color:#f87171">@((StageHub.NestStats?.Fail ?? 0))</b>
                 </span>
                 @if (!string.IsNullOrEmpty(StageHub.NestStats?.LastError))
                 {
                     <span style="color:#f87171;font-weight:600;">｜ 最近错误：@StageHub.NestStats.LastError</span>
                 }
             </div>
-            @if ((StageHub.NestStats?.ReadyVehicles ?? []).Count > 0)
+            @if ((StageHub.NestStats?.PoolVehicles ?? []).Count > 0)
             {
-                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">
-                    @foreach (var v in StageHub.NestStats!.ReadyVehicles)
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:center;">
+                    <span class="hint-text" style="margin:0;">🔒 锁定车队（@(StageHub.NestStats!.PoolVehicles.Count) 台）：</span>
+                    @foreach (var v in StageHub.NestStats!.PoolVehicles)
                     {
-                        <span class="addr-badge">🚚 @v</span>
+                        <span class="addr-badge" style="background:rgba(56,189,248,0.15);color:#7dd3fc;">🔒 @v</span>
                     }
                 </div>
             }
@@ -596,9 +610,18 @@
     private int _moveOk => MoveLoop.Ok;
     private int _moveFail => MoveLoop.Fail;
 
-    // ── 归巢模式（后端 NestRunner 执行：查车/选点/指定车 MOVE_ONLY，状态走 SignalR NestStats）──
-    private string _nestMark = "";
+    // ── 归巢模式（后端 NestRunner 执行：框选巢区 → 持续调度直到区内点全有车，状态走 SignalR NestStats）──
+    private string _nestMarksText = "";
     private bool _nestRunning => StageHub.NestStats?.Running == true || Hub.Status.NestRunning;
+    // 车队顺序即选择顺序（保序去重）：车多时仅前 N 台参与（N = 巢区点数），由两步地图确认时截断
+    private List<string> _selectedVehicles = [];
+    private static List<string> FleetDedupe(IEnumerable<string> xs) =>
+        xs.Where(n => !string.IsNullOrWhiteSpace(n))
+          .Distinct(StringComparer.OrdinalIgnoreCase)
+          .ToList();
+    private string _fleetPreview => _selectedVehicles.Count == 0
+        ? "未指定（归巢时自动捕获当前就绪车）"
+        : string.Join("、", _selectedVehicles.Take(6)) + (_selectedVehicles.Count > 6 ? $" 等 {_selectedVehicles.Count} 台" : "");
 
     // ── 自动化模板编辑状态 ──
     private string _autoMode = "template";
@@ -736,21 +759,75 @@
     private void OnNestStatsChanged() => InvokeAsync(StateHasChanged);
 
     // ── 归巢模式 ──
-    private async Task SaveNestConfig()
-    {
-        if (string.IsNullOrWhiteSpace(_nestMark)) return;
-        await WcsApi.PutAsync<NestConfigDto, object>("/api/wcs/auto/nest/config", new NestConfigDto { NestMark = _nestMark.Trim() });
-        ShowResp($"✅ 巢点已保存：{_nestMark.Trim()}", "success");
-    }
+    private string _nestPreview => string.IsNullOrWhiteSpace(_nestMarksText)
+        ? "未选择"
+        : $"已选 {AutoRangeConfig.ParseMarks(_nestMarksText).Count} 个站点";
 
     private async Task RunNest()
     {
         if (string.IsNullOrWhiteSpace(SceneName)) { ShowResp("❌ 未配置场景名称（地图信息页系统设置）", "error"); return; }
-        var result = await WcsApi.PostAsync<object, NestRunResult>("/api/wcs/auto/nest/run", new { });
+        var result = await WcsApi.RunNestAsync(_selectedVehicles.Count > 0 ? _selectedVehicles : null);
         if (result == null) { ShowResp("❌ 归巢请求失败（后端未响应）", "error"); return; }
         if (!result.Success) { ShowResp("❌ " + (result.Reason ?? "归巢执行被拒绝"), "error"); return; }
         ShowResp("🚀 归巢执行中，结果见系统日志…", "success");
         StateHasChanged();
+    }
+
+    private async Task StopNest()
+    {
+        await WcsApi.StopNestAsync();
+        ShowResp("⏹ 已请求停止归巢", "info");
+    }
+
+    // ── 归巢两步地图选择（先选车队，再选巢区，总结确认后一并保存）──
+    private List<VehicleInfoDto> _fleetVehicles = [];
+
+    /// <summary>打开两步地图：① 框选车队（站点为背景，仅就绪车可选）→ ② 框选巢区（车辆为背景）→ 总结确认后车队存 localStorage、巢区 PUT nest/config。</summary>
+    private async Task OpenNestPicker()
+    {
+        if (_mapStations.Count == 0) { ShowResp("❌ 请先在「地图信息」页加载地图数据", "error"); return; }
+        try { _fleetVehicles = await WcsApi.GetVehiclesAsync(); }
+        catch { _fleetVehicles = []; }
+        if (_fleetVehicles.Count == 0)
+        {
+            ShowResp("❌ 未获取到车辆（检查 GRCS 连接与「地图信息 → 系统设置」的场景名称）", "error");
+            return;
+        }
+        var chargingMarks = new HashSet<string>(
+            _mapStations.Where(s => (s.StationType & MapStationTypeBits.Charging) != 0).Select(s => s.Mark),
+            StringComparer.OrdinalIgnoreCase);
+        var config = new
+        {
+            Stations = _mapStations.Select(s => new { s.Mark, s.StationType, s.X, s.Y, s.Floor, s.StaEnable }),
+            Vehicles = _fleetVehicles.Select(v => new
+            {
+                v.Name, v.X, v.Y, v.IsReady, v.ExecutionState, v.UtilizationState, v.Power, v.Location,
+                IsCharging = !string.IsNullOrEmpty(v.Location) && chargingMarks.Contains(v.Location),
+            }),
+            PreselectedVehicles = _selectedVehicles,
+            PreselectedMarks = AutoRangeConfig.ParseMarks(_nestMarksText),
+        };
+        try
+        {
+            var json = await Js.InvokeAsync<string?>("grcsNestPickerOpen", JsonSerializer.Serialize(config));
+            if (string.IsNullOrWhiteSpace(json)) return;
+            NestPickResult? result = null;
+            try { result = JsonSerializer.Deserialize<NestPickResult>(json); } catch { }
+            if (result == null) return;
+
+            var names = result.Vehicles.Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+            _selectedVehicles = FleetDedupe(names);
+            await LocalStore.SetAsync(Js, "grcs_nest_fleet", JsonSerializer.Serialize(names));
+
+            var marks = result.Marks.Where(m => !string.IsNullOrWhiteSpace(m)).Distinct().ToList();
+            _nestMarksText = string.Join(", ", marks);
+            await WcsApi.PutAsync<NestConfigDto, object>("/api/wcs/auto/nest/config", new NestConfigDto { Marks = marks });
+            ShowResp(result.Dropped > 0
+                ? $"✅ 已保存：车队前 {names.Count} 台参与、巢区 {marks.Count} 个站点（其余 {result.Dropped} 台已移出车队）"
+                : $"✅ 已保存：车队 {names.Count} 台、巢区 {marks.Count} 个站点（确认后立即生效）", "success");
+            StateHasChanged();
+        }
+        catch (Exception ex) { ShowResp($"❌ 地图选择失败：{ex.Message}", "error"); }
     }
 
     // ── 自动化模板 ──
@@ -988,7 +1065,18 @@
         try
         {
             var nest = await WcsApi.GetAsync<NestConfigDto>("/api/wcs/auto/nest/config");
-            if (nest != null) _nestMark = nest.NestMark ?? "";
+            if (nest != null) _nestMarksText = string.Join(", ", nest.Marks);
+        }
+        catch { }
+
+        try
+        {
+            var fleet = LocalStore["grcs_nest_fleet"];
+            if (!string.IsNullOrEmpty(fleet) && fleet != "null")
+            {
+                var list = JsonSerializer.Deserialize<List<string>>(fleet) ?? [];
+                _selectedVehicles = FleetDedupe(list);
+            }
         }
         catch { }
     }
@@ -1021,4 +1109,12 @@
     }
 
     private void ShowResp(string msg, string cls) { _responseText = msg; _respClass = cls; }
+
+    // ── 归巢两步地图选择结果（nest-map-picker.js 确认后返回）──
+    private sealed class NestPickResult
+    {
+        public List<string> Vehicles { get; set; } = [];
+        public List<string> Marks { get; set; } = [];
+        public int Dropped { get; set; }
+    }
 }

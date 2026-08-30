@@ -190,6 +190,38 @@ public class WcsApiClient
         return (await PostAsync<object, SaveResponse>($"/api/wcs/modules/logs/{id}/retry", new { })) is { Success: true };
     }
 
+    /// <summary>停止归巢（中断等待与后续下发，已下发的不撤销）。</summary>
+    public async Task<bool> StopNestAsync()
+    {
+        return (await PostAsync<object, SaveResponse>("/api/wcs/auto/nest/stop", new { })) is { Success: true };
+    }
+
+    /// <summary>执行归巢（vehicles = 本次车队车名，可空 = 后端自动捕获当前就绪车）。</summary>
+    public async Task<NestRunResult?> RunNestAsync(List<string>? vehicles = null)
+    {
+        return await PostAsync<object, NestRunResult>("/api/wcs/auto/nest/run", new { vehicles });
+    }
+
+    /// <summary>GRCS 全部车辆（归巢车辆多选用）。</summary>
+    public async Task<List<VehicleInfoDto>> GetVehiclesAsync()
+    {
+        try
+        {
+            var json = await GetAsync<JsonElement>("/api/wcs/auto/vehicles");
+            if (json.TryGetProperty("vehicles", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                return JsonSerializer.Deserialize<List<VehicleInfoDto>>(arr.GetRawText(), JsonOpts) ?? [];
+            return [];
+        }
+        catch { return []; }
+    }
+
+    /// <summary>GRCS 接口说明清单（后端硬编码接口记录）。</summary>
+    public async Task<List<GrcsApiDocDto>> GetGrcsApiDocsAsync()
+    {
+        try { return await GetAsync<List<GrcsApiDocDto>>("/api/wcs/grcs-api-docs") ?? []; }
+        catch { return []; }
+    }
+
     // ── 通用 Mock 规则（入站可配）──
     public async Task<List<Models.MockRuleDto>?> GetMockRulesAsync()
     {

@@ -82,10 +82,10 @@ public class MoveTaskStatsDto
     public string LastStation { get; set; } = "";
 }
 
-/// <summary>归巢模式配置（巢点站点 Mark）。</summary>
+/// <summary>归巢模式配置（地图框选巢区站点 Mark 列表，与选点范围 auto_range 相互独立）。</summary>
 public class NestConfigDto
 {
-    public string? NestMark { get; set; }
+    public List<string> Marks { get; set; } = [];
 }
 
 /// <summary>归巢模式状态（后端 SignalR「NestStats」广播 + GET nest/status）。</summary>
@@ -94,9 +94,14 @@ public class NestStatsDto
     public bool Running { get; set; }
     public string? LastRunAt { get; set; }
     public List<string> ReadyVehicles { get; set; } = [];
+    /// <summary>本次锁定的车队（只调度这些车，与 ReadyVehicles 全量就绪车区分）。</summary>
+    public List<string> PoolVehicles { get; set; } = [];
     public int Ok { get; set; }
     public int Fail { get; set; }
     public string? LastError { get; set; }
+    public int TargetTotal { get; set; }
+    public int TargetOccupied { get; set; }
+    public int TargetAssigned { get; set; }
 }
 
 /// <summary>归巢执行结果（POST /api/wcs/auto/nest/run）。</summary>
@@ -104,6 +109,27 @@ public class NestRunResult
 {
     public bool Success { get; set; }
     public string? Reason { get; set; }
+}
+
+/// <summary>GRCS 车辆信息（GET /api/wcs/auto/vehicles，归巢车辆多选用）。</summary>
+public class VehicleInfoDto
+{
+    public string Name { get; set; } = "";
+    public string ExecutionState { get; set; } = "";
+    public string UtilizationState { get; set; } = "";
+    public string CurrentTransportOrder { get; set; } = "";
+    public bool IsOnline { get; set; }
+    public double Power { get; set; }
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double Z { get; set; }
+    public string Location { get; set; } = "";
+
+    /// <summary>归巢就绪判定：在线 + 空闲 + 自动调度 + 无当前任务。</summary>
+    public bool IsReady => IsOnline
+        && string.Equals(ExecutionState, "IDLE", StringComparison.OrdinalIgnoreCase)
+        && string.Equals(UtilizationState, "AUTOMATIC", StringComparison.OrdinalIgnoreCase)
+        && string.IsNullOrWhiteSpace(CurrentTransportOrder);
 }
 
 /// <summary>异常记录（AGV/软件异常台账，纯 HTTP 读写）。</summary>
@@ -244,4 +270,25 @@ public class ModuleExecLogsResponse
 {
     public long MaxId { get; set; }
     public List<ModuleExecLogEntry> Entries { get; set; } = [];
+}
+
+/// <summary>GRCS 接口说明条目（GET /api/wcs/grcs-api-docs，后端 GrcsHttpClient 硬编码接口清单）。</summary>
+public class GrcsApiDocDto
+{
+    public string Name { get; set; } = "";
+    public string Method { get; set; } = "";
+    public string UrlTemplate { get; set; } = "";
+    public string Description { get; set; } = "";
+    public string UsedBy { get; set; } = "";
+    public List<GrcsApiParamDto> Params { get; set; } = [];
+    public string? BodyExample { get; set; }
+}
+
+/// <summary>GRCS 接口单个参数说明。</summary>
+public class GrcsApiParamDto
+{
+    public string Name { get; set; } = "";
+    public string Type { get; set; } = "";
+    public bool Required { get; set; }
+    public string Description { get; set; } = "";
 }
