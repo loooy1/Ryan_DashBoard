@@ -17,17 +17,3 @@ public class FlexibleDateTimeConverter : JsonConverter<DateTime>
     public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
         => writer.WriteStringValue(value.ToString("yyyy-MM-dd HH:mm:ss.fff"));
 }
-
-/// <summary>可空宽松 DateTime 转换器（后端 Newtonsoft 输出 "yyyy-MM-dd HH:mm:ss.fff"，null 原样透传）。</summary>
-public class FlexibleNullableDateTimeConverter : JsonConverter<DateTime?>
-{
-    public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-        => reader.TokenType == JsonTokenType.Null ? null
-            : DateTime.TryParse(reader.GetString(), out var dt) ? dt : null;
-
-    public override void Write(Utf8JsonWriter writer, DateTime? value, JsonSerializerOptions options)
-    {
-        if (value.HasValue) writer.WriteStringValue(value.Value.ToString("yyyy-MM-dd HH:mm:ss.fff"));
-        else writer.WriteNullValue();
-    }
-}

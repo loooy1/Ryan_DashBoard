@@ -50,12 +50,19 @@ html, body, #app {
 /* ── Sub sidebar ── */
 .sub-sidebar {
     display: flex; flex-direction: column; width: 200px; flex-shrink: 0;
-    background: #0c1222; border-right: 1px solid #1e293b; overflow-y: auto;
+    background: #0c1222; border-right: 1px solid #1e293b; overflow: hidden;
 }
 .sub-sidebar .sub-header {
     display: flex; align-items: center; gap: 8px;
     padding: 14px; border-bottom: 1px solid #1e293b;
     font-weight: 600; font-size: 0.85rem; color: #e2e8f0;
+}
+.sub-sidebar .sub-scroll {
+    flex: 1; overflow-y: auto; min-height: 0;
+}
+.sub-sidebar .sub-pinned {
+    border-top: 1px solid #1e293b; padding: 4px 0 2px; background: #0a101d;
+    flex-shrink: 0;
 }
 .sub-nav-btn {
     display: flex; align-items: center; gap: 8px;
@@ -169,6 +176,15 @@ html, body, #app {
     padding: 2px 8px; font-size: 0.72rem; font-family: 'Consolas','Monaco',monospace;
     color: #67e8f9; white-space: nowrap;
 }
+
+/* ── 项目记录：按天分组展开块 ── */
+.pl-day-block { margin-top: 8px; }
+.pl-day-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 12px; border: 1px solid #1e293b; border-radius: 8px;
+    background: #0f172a; cursor: pointer; user-select: none;
+}
+.pl-day-header:hover { border-color: #334155; background: #111827; }
 
 /* ── Shared UI ── */
 .section-card {

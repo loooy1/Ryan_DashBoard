@@ -1,7 +1,7 @@
 using GRCS.Dashboard.Modules.WcsSimulator.Services;
-using GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
+using GRCS.Dashboard.Modules.WcsSimulator.Models;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services.TWD;
+namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 任务台账遥控壳（Skill E：数据源为后端 task_records 合并表）。

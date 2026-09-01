@@ -28,31 +28,8 @@
         // ────────────────────────────────────────────────────────────────
         window.grcsCopyText = (text) => navigator.clipboard.writeText(text);
 
-        // Blazor JS interop：注册/取消注册 storage 事件监听器
-        // 所有 storage 变更统一派发到一个 C# 方法，由组件内部按 key 路由
-        window.__grcsStorageCallbackId = null;
-        window.__grcsStorageCallbackRef = null;
-        window.grcsRegisterStorageListener = (dotnetRef, callbackId) => {
-            window.__grcsStorageCallbackId = callbackId;
-            window.__grcsStorageCallbackRef = dotnetRef;
-            const handler = (e) => {
-                if (!e.key) return;
-                try { dotnetRef.invokeMethodAsync('OnStorageChanged', e.key, e.newValue ?? ''); } catch {}
-            };
-            window.addEventListener('storage', handler);
-            window.__grcsStorageHandler = handler;
-        };
-        window.grcsUnregisterStorageListener = () => {
-            const handler = window.__grcsStorageHandler;
-            if (handler) { window.removeEventListener('storage', handler); window.__grcsStorageHandler = null; }
-            window.__grcsStorageCallbackId = null;
-            window.__grcsStorageCallbackRef = null;
-        };
-
         // generic localStorage helpers
         window.grcsStoreSave = (key, json) => localStorage.setItem(key, json);
-        window.grcsStoreLoad = (key) => localStorage.getItem(key) || 'null';
-        window.grcsStoreRemove = (key) => localStorage.removeItem(key);
         // batch load: pass JSON array of keys → returns JSON object {key: value, ...}
         window.grcsStoreLoadAll = (keysJson) => {
             let keys = [];
@@ -63,7 +40,6 @@
         };
     </script>
 <script src="station-map-picker.js"></script>
-<script src="vehicle-map-picker.js"></script>
         <script src="nest-map-picker.js"></script>
 <script src="js/signalr.min.js"></script>
 <script src="js/signalr-taskstage.js"></script>

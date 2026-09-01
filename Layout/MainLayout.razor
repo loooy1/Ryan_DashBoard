@@ -8,13 +8,12 @@
 @implements IDisposable
 
 @* ═══════════════════════════════════════════════════════
-   主布局：三列式结构，支持三层导航
+   主布局：两列式结构，支持两层导航
    第一列 → 功能列表（如 WCS模拟器）      —— 始终显示
-   第二列 → 项目列表（如 泰国TWD项目）    —— 选中功能后出现
-    第三列 → 页面导航（如 任务看板 / 信号交互） —— 选中项目后出现，主侧边栏缩回为图标模式
+   第二列 → 页面导航（如 任务看板 / 信号交互） —— 选中功能后出现，主侧边栏缩回为图标模式
 
    导航状态在 ModuleNavigationService（Scoped，每个标签页独立）中维护，
-   本布局订阅其 StateChanged 事件重绘；选中项目后直接 NavigateTo 该项目默认页面。
+   本布局订阅其 StateChanged 事件重绘；选中功能后直接 NavigateTo 该功能默认页面。
    底部的后端连接状态由 BackendStatus 独立组件自行探测（见该组件注释）。
    ═══════════════════════════════════════════════════════ *@
 
@@ -30,8 +29,8 @@
 
         <div class="nav-section-title">功能</div>
 
-        @* 主页按钮：选中的功能/项目都为 null 时高亮 *@
-        <button class="nav-btn @(Nav.ActiveFeature == null && Nav.ActiveProject == null ? "active" : "")"
+        @* 主页按钮：未选中任何功能时高亮 *@
+        <button class="nav-btn @(Nav.ActiveFeature == null ? "active" : "")"
                 @onclick="GoHome" title="主页">
             <span class="nav-icon">⌂</span>
             <span class="nav-label">主页</span>
@@ -49,37 +48,33 @@
         <div class="sidebar-spacer"></div>
     </aside>
 
-    @* ━━━ 第二列：项目列表（选中功能后出现）━━━ *@
-    @if (Nav.ActiveFeature != null && Nav.ActiveProject == null)
+    @* ━━━ 第二列：页面导航（选中功能后出现，此时主侧边栏缩回）━━━ *@
+    @if (Nav.ActiveFeature != null && Nav.SubNavItems.Count > 0)
     {
         <nav class="sub-sidebar">
             <div class="sub-header">@GetFeatureTitle()</div>
-            @foreach (var proj in Nav.Projects)
-            {
-                <button class="sub-nav-btn" @onclick="() => OpenProject(proj)">
-                    <span class="nav-icon">@proj.Icon</span>
-                    @proj.Title
-                </button>
-            }
-        </nav>
-    }
+            <div class="sub-scroll">
+                @foreach (var item in Nav.SubNavItems.Where(i => !i.Pinned))
+                {
+                    @* NavLink 自动根据当前 URL 高亮对应项 *@
+                    <NavLink class="sub-nav-btn" href="@item.Href" Match="NavLinkMatch.Prefix">
+                        <span class="nav-icon">@item.Icon</span>
+                        @item.Label
+                    </NavLink>
+                }
+            </div>
 
-    @* ━━━ 第三列：页面导航（选中项目后出现，此时主侧边栏缩回）━━━ *@
-    @if (Nav.ActiveProject != null && Nav.SubNavItems.Count > 0)
-    {
-        <nav class="sub-sidebar">
-            <div class="sub-header">@GetProjectTitle()</div>
-            @foreach (var item in Nav.SubNavItems)
-            {
-                @* NavLink 自动根据当前 URL 高亮对应项 *@
-                <NavLink class="sub-nav-btn" href="@item.Href" Match="NavLinkMatch.Prefix">
-                    <span class="nav-icon">@item.Icon</span>
-                    @item.Label
-                </NavLink>
-            }
-
-            @* ━━━ 项目导航底部：连接状态区（VS Code 风格，独立组件自行探测）━━━ *@
-            <BackendStatus />
+            @* ━━━ 底部固定区：Pinned 项 + 连接状态（不随列表滚动，始终可见）━━━ *@
+            <div class="sub-pinned">
+                @foreach (var item in Nav.SubNavItems.Where(i => i.Pinned))
+                {
+                    <NavLink class="sub-nav-btn" href="@item.Href" Match="NavLinkMatch.Prefix">
+                        <span class="nav-icon">@item.Icon</span>
+                        @item.Label
+                    </NavLink>
+                }
+                <BackendStatus />
+            </div>
         </nav>
     }
 
@@ -110,39 +105,23 @@
     // 导航状态变了就重绘整个布局
     private void OnNavStateChanged() => StateHasChanged();
 
-    // ── 第一层 → 第二层：选中 WCS模拟器，显示项目列表 ──
+    // ── 第一层 → 第二层：选中 WCS模拟器，直接进入页面导航并跳转默认页 ──
     private void SelectWcs()
     {
-        Nav.SelectFeature("wcs", new List<ProjectDef>
+        Nav.SelectFeature("wcs", new List<SubNavItem>
         {
-            new("thailand-twd", "泰国TWD项目", "📁"),
-            // 新增项目在这里加
+            new("地图信息", "wcs-simulator/map-reader", "🗺️"),
+            new("库存管理", "wcs-simulator/inventory", "📦"),
+            new("手动任务下发", "wcs-simulator/dispatch", "📤"),
+            new("自动化任务", "wcs-simulator/automation", "🤖"),
+            new("信号交互", "wcs-simulator/signal-interaction", "📶"),
+            new("任务看板", "wcs-simulator/task-stages", "📊"),
+            new("GRCS 接口说明", "wcs-simulator/grcs-api-docs", "🔌"),
+            new("异常记录", "wcs-simulator/exception-records", "⚠️", true),
+            new("项目记录", "wcs-simulator/project-logs", "📋", true),
         });
-    }
-
-    // ── 第二层 → 第三层：选中项目 → 侧边栏缩回 + 显示页面导航 ──
-    private void OpenProject(ProjectDef proj)
-    {
-        switch (proj.Id)
-        {
-            case "thailand-twd":
-                Nav.SelectProject("thailand-twd", new List<SubNavItem>
-                {
-                    new("地图信息", "wcs-simulator/map-reader", "🗺️"),
-                    new("库存管理", "wcs-simulator/inventory", "📦"),
-                    new("手动任务下发", "wcs-simulator/dispatch", "📤"),
-                    new("自动化任务", "wcs-simulator/automation", "🤖"),
-                    new("信号交互", "wcs-simulator/signal-interaction", "📶"),
-                    new("异常记录", "wcs-simulator/exception-records", "⚠️"),
-                    new("任务看板", "wcs-simulator/task-stages", "📊"),
-                    new("GRCS 接口说明", "wcs-simulator/grcs-api-docs", "🔌"),
-                });
-                // 同时跳转到该项目的默认页面
-                NavManager.NavigateTo("wcs-simulator/dispatch");
-                break;
-
-            // 新增项目的 case 在这里加
-        }
+        // 直接跳转到该功能的默认页面
+        NavManager.NavigateTo("wcs-simulator/dispatch");
     }
 
     // 回到主页：清空所有选中状态，侧边栏展开
@@ -156,13 +135,6 @@
     private string GetFeatureTitle() => Nav.ActiveFeature switch
     {
         "wcs" => "WCS模拟器",
-        _ => ""
-    };
-
-    // 根据项目 ID 返回中文标题
-    private string GetProjectTitle() => Nav.ActiveProject switch
-    {
-        "thailand-twd" => "泰国TWD项目",
         _ => ""
     };
 

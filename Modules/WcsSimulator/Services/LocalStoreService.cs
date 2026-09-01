@@ -66,14 +66,9 @@ public class LocalStoreService
     [
         // 共享配置
         "grcs_warehouse", "grcs_wcs_url", "grcs_grcs_url",
-        // 自动模式开关（进入申请镜像；信号四档开关由后端持久化，前端只读后端快照）
-        "grcs_si_auto_mode",
         // 折叠状态
-        "grcs_si_tab", "grcs_ts_collapsed", "grcs_td_collapsed", "grcs_mr_collapsed",
+        "grcs_ts_collapsed", "grcs_td_collapsed", "grcs_mr_collapsed",
         "grcs_inv_collapsed", "grcs_auto_collapsed",
-        "grcs_vehicle_collapsed",
-        // 确认/跟踪集合（确认状态已下沉后端 workflow_state；此处仅保留标签页内删除恢复区）
-        "grcs_si_del_arrival", "grcs_si_del_removal",
         // 表单/任务状态
         "grcs_td_state",
         // 任务类型模板 / 功能模块（注册表持久化，跨页共享；新标签页需预载才能同步读）
@@ -82,5 +77,7 @@ public class LocalStoreService
         "grcs_map_stations",
         // 归巢车队（「归巢车队」页勾选，自动化任务页归巢执行用）
         "grcs_nest_fleet",
+        // 当前项目（异常记录 / 项目记录按项目隔离，记住切换）
+        "grcs_er_project", "grcs_pl_project",
     ];
 }

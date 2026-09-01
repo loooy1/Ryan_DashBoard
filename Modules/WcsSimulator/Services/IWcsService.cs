@@ -1,4 +1,4 @@
-using GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
+using GRCS.Dashboard.Modules.WcsSimulator.Models;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
@@ -8,12 +8,6 @@ namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 /// </summary>
 public interface IWcsService
 {
-    // ── 任务下发 ──
-
-    /// <summary>向 GRCS 后端发送任务组（/api/v{version}/task_receive）。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> SendTaskGroupAsync(
-        string baseUrl, string apiVersion, WcsTaskGroup payload);
-
     // ── 车辆任务（GRCS 运力调度接口，非 WCS 协议）──
 
     /// <summary>发送车辆任务（移动/换层/充电，POST /api/RawOrder/ChangeFloor）。</summary>
@@ -30,11 +24,6 @@ public interface IWcsService
     /// <summary>自动生成容器入库（GET /AutoContainerEnter，场景按后端设置）。</summary>
     Task<(bool Ok, int StatusCode, string Json)> AutoContainerEnterAsync(string baseUrl, string sceneName,
         string prefix = "container", int num = -1, int floor = -1, int type = 1);
-
-    // ── 通用 HTTP 转发（功能模块 / 信号经此后端代发 GRCS）──
-
-    /// <summary>通用 HTTP 转发：把 GRCS 相对路径 + HTTP 方法 + 报文交给后端 /api/wcs/forward，由后端注入 Warehouse 并代发 GRCS。</summary>
-    Task<(bool Ok, int StatusCode, string Json)> ForwardAsync(string url, string method, object body);
 
     // ── 任务阶段（WCS 后端管理接口 /api/wcs）──
 

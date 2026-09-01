@@ -1,6 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
-using GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
+using GRCS.Dashboard.Modules.WcsSimulator.Models;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
@@ -32,12 +32,6 @@ public class MockWcsService : IWcsService
     }
 
     private string U(string path) => WcsBase.TrimEnd('/') + path;
-
-    // ── 任务下发（代理 → GRCS /api/v1/task_receive）──
-
-    public async Task<(bool Ok, int StatusCode, string Json)> SendTaskGroupAsync(
-        string baseUrl, string apiVersion, WcsTaskGroup payload)
-        => await ProxyPostAsync("/api/wcs/grcs/task-receive", payload);
 
     // ── 车辆任务（代理 → GRCS /api/RawOrder/ChangeFloor）──
 
@@ -77,12 +71,6 @@ public class MockWcsService : IWcsService
         }
         catch (Exception ex) { return (false, 0, JsonSerializer.Serialize(new { error = ex.Message })); }
     }
-
-    // ── 通用 HTTP 转发（功能模块 / 信号经此后端代发 GRCS）──
-
-    /// <summary>通用 HTTP 转发：把 GRCS 相对路径 + 方法 + 报文交给后端 /api/wcs/forward（后端注入 Warehouse 并代发 GRCS）。</summary>
-    public async Task<(bool Ok, int StatusCode, string Json)> ForwardAsync(string url, string method, object body)
-        => await ProxyPostAsync("/api/wcs/forward", new { url, method, body });
 
     // ── 任务阶段（WCS 后端管理接口 /api/wcs）──
 

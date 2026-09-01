@@ -1,7 +1,6 @@
 @* ── 全局 using：所有 .razor 文件自动引入以下命名空间 ──
    框架基础（Blazor/MudBlazor）在前，本项目命名空间在后；
-   WcsSimulator 模块按 Models/Services/Pages/Extensions 平铺引入公用命名空间，
-   每个业务项目（如 TWD）在对应 .TWD 子命名空间单独引入；
+   WcsSimulator 模块按 Models/Services/Pages/Extensions 平铺引入公用命名空间；
    新增模块时在 Modules/ 下建目录并在此补充对应命名空间。 *@
 @using System.Net.Http
 @using System.Net.Http.Json
@@ -16,10 +15,8 @@
 @using GRCS.Dashboard.Layout
 @using GRCS.Dashboard.Services
 @using GRCS.Dashboard.Modules.WcsSimulator
-@using GRCS.Dashboard.Modules.WcsSimulator.Pages.TWD
+@using GRCS.Dashboard.Modules.WcsSimulator.Pages
 @using GRCS.Dashboard.Modules.WcsSimulator.Services
-@using GRCS.Dashboard.Modules.WcsSimulator.Services.TWD
 @using GRCS.Dashboard.Modules.WcsSimulator.Models
-@using GRCS.Dashboard.Modules.WcsSimulator.Models.TWD
 @using GRCS.Dashboard.Modules.WcsSimulator.Extensions
 @* @using GRCS.Dashboard.Modules.WcsSimulator.Components *@

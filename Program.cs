@@ -36,8 +36,8 @@ builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.LocalSto
 // Skill E：后端遥控壳（WcsApiClient + 共享状态/日志轮询中枢 + 三个瘦壳服务）
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.WcsApiClient>();
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.AutomationHub>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TWD.SignalAutoService>();
-builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TWD.TaskLedgerService>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.SignalAutoService>();
+builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskLedgerService>();
 // 任务阶段事件共享轮询器：全应用唯一轮询 task-stages，替代各处各自轮询
 builder.Services.AddScoped<GRCS.Dashboard.Modules.WcsSimulator.Services.TaskStageHub>();
 // 纯移动任务循环（scoped：跨页面导航存活，离开自动化页任务继续下发）

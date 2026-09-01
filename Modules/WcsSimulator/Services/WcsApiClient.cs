@@ -78,18 +78,6 @@ public class WcsApiClient
         catch { return default; }
     }
 
-    /// <summary>带取消令牌的 POST（纯移动循环限时用：超时按失败处理，不拖累下发节奏）。</summary>
-    public async Task<T?> PostAsync<TReq, T>(string path, TReq body, CancellationToken ct)
-    {
-        try
-        {
-            var resp = await _http.PostAsJsonAsync(U(path), body, ct);
-            var json = await resp.Content.ReadAsStringAsync(ct);
-            return resp.IsSuccessStatusCode ? JsonSerializer.Deserialize<T>(json, JsonOpts) : default;
-        }
-        catch { return default; }
-    }
-
     public async Task<string> PostAsync<TReq>(string path, TReq body)
     {
         try
@@ -171,13 +159,6 @@ public class WcsApiClient
         return await DeleteAsync($"/api/wcs/modules/{Uri.EscapeDataString(id)}");
     }
 
-    /// <summary>模块执行记录增量拉取（sinceId &gt; 0 只取新条目；后端统一执行器写入）。</summary>
-    public async Task<ModuleExecLogsResponse?> GetModuleExecLogsAsync(long sinceId)
-    {
-        var path = sinceId > 0 ? $"/api/wcs/modules/logs?sinceId={sinceId}" : "/api/wcs/modules/logs";
-        return await GetAsync<ModuleExecLogsResponse>(path);
-    }
-
     /// <summary>清空模块执行记录（后端内存环形缓冲）。</summary>
     public async Task<bool> ClearModuleExecLogsAsync()
     {
@@ -232,16 +213,10 @@ public class WcsApiClient
     {
         return await PostAsync<IEnumerable<Models.MockRuleDto>, SaveResponse>("/api/wcs/mocks", items) is { Success: true };
     }
-    public async Task<bool> DeleteMockRuleAsync(string id)
-    {
-        return await DeleteAsync($"/api/wcs/mocks/{Uri.EscapeDataString(id)}");
-    }
     private class MockRuleListResponse { public bool Success { get; set; } public List<Models.MockRuleDto>? Items { get; set; } }
 
     // ── 准入请求（RCS->WCS station_entry_request）──
 
-
-    public async Task<List<MockApprovalEvent>?> GetMockApprovalsAsync() => await GetAsync<List<MockApprovalEvent>>("/api/wcs/mock-approvals");
     public async Task<bool> DecideMockAsync(string key, bool allow) => (await PostAsync<object, object>($"/api/wcs/mock-approvals/decisions/{Uri.EscapeDataString(key)}", new { allow })) != null;
     public async Task<bool> DeleteMockApprovalAsync(string key) => await DeleteAsync($"/api/wcs/mock-approvals/{Uri.EscapeDataString(key)}");
     public async Task<bool> ClearMockApprovalsAsync() => await DeleteAsync("/api/wcs/mock-approvals");

@@ -1,6 +1,6 @@
 using GRCS.Dashboard.Modules.WcsSimulator.Services;
 
-namespace GRCS.Dashboard.Modules.WcsSimulator.Services.TWD;
+namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
 
 /// <summary>
 /// 信号自动放行遥控壳（Skill E：自动确认逻辑已下沉到 GrcsBackend SignalAutoHostedService，

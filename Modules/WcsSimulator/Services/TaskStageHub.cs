@@ -1,5 +1,4 @@
 using GRCS.Dashboard.Modules.WcsSimulator.Models;
-using GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
 using Microsoft.JSInterop;
 
 namespace GRCS.Dashboard.Modules.WcsSimulator.Services;
@@ -52,17 +51,6 @@ public class TaskStageHub : IDisposable
         }
     }
 
-    /// <summary>某任务的全部记录（创建行 + 阶段行，按到达顺序，用于看板时间线）。</summary>
-    public IReadOnlyList<TaskRecord> StagesOf(string taskId)
-    {
-        lock (_lock)
-        {
-            return _records
-                .Where(r => string.Equals(r.TaskId, taskId, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-    }
-
     /// <summary>已 FINISHED 的任务号集合（大小写不敏感）。</summary>
     public HashSet<string> FinishedTaskIds => _finished;
 
@@ -97,16 +85,12 @@ public class TaskStageHub : IDisposable
     // ── 模块执行记录（后端 ModuleExecLogStore 增量单条 + 连接回放全量）──
     private const int MaxExecLog = 200;
     private List<ModuleExecLogEntry> _execLog = [];
-    private long _execLogMaxId;
 
     /// <summary>模块执行记录缓存（最新在前，上限 200 条）。</summary>
     public IReadOnlyList<ModuleExecLogEntry> ExecLogEntries
     {
         get { lock (_lock) return _execLog.ToList(); }
     }
-
-    /// <summary>已见最大条目 Id（重连回放后重置为后端水位）。</summary>
-    public long ExecLogMaxId { get { lock (_lock) return _execLogMaxId; } }
 
     /// <summary>模块执行记录变化时触发。</summary>
     public event Action? ExecLogChanged;
@@ -219,7 +203,6 @@ public class TaskStageHub : IDisposable
         {
             _execLog = payload.Entries ?? [];
             if (_execLog.Count > MaxExecLog) _execLog.RemoveRange(0, _execLog.Count - MaxExecLog);
-            _execLogMaxId = payload.MaxId;
         }
         ExecLogChanged?.Invoke();
     }
@@ -234,7 +217,6 @@ public class TaskStageHub : IDisposable
             if (_execLog.Any(x => x.Id == entry.Id)) return;
             _execLog.Insert(0, entry);
             if (_execLog.Count > MaxExecLog) _execLog.RemoveRange(MaxExecLog, _execLog.Count - MaxExecLog);
-            if (entry.Id > _execLogMaxId) _execLogMaxId = entry.Id;
         }
         ExecLogChanged?.Invoke();
     }
@@ -253,33 +235,6 @@ public class TaskStageHub : IDisposable
         Changed?.Invoke();
     }
 
-    /// <summary>
-    /// 等待任务到达 FINISHED 阶段（与后端进程内 WaitFinishedAsync 语义对齐，供前端两段式流程用）。
-    /// 订阅 Changed 事件，FINISHED 到达即唤醒；订阅前/后各检查一次缓存，防竞态丢事件。
-    /// </summary>
-    public async Task WaitFinishedAsync(string taskId)
-    {
-        await EnsureStartedAsync();
-        if (_finished.Contains(taskId)) return;
-
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        void Handler()
-        {
-            if (_finished.Contains(taskId)) tcs.TrySetResult();
-        }
-
-        Changed += Handler;
-        try
-        {
-            if (_finished.Contains(taskId)) return;
-            await tcs.Task;
-        }
-        finally
-        {
-            Changed -= Handler;
-        }
-    }
-
     /// <summary>删除某任务后调用：同步清掉本地缓存（全行：创建 + 阶段），防止等待者基于陈旧数据误判。</summary>
     public void RemoveTask(string taskId)
     {
@@ -288,13 +243,6 @@ public class TaskStageHub : IDisposable
             _records.RemoveAll(r => string.Equals(r.TaskId, taskId, StringComparison.OrdinalIgnoreCase));
             _finished.Remove(taskId);
         }
-        Changed?.Invoke();
-    }
-
-    /// <summary>清空全部记录后调用：本地缓存同步清空。</summary>
-    public void ClearAll()
-    {
-        lock (_lock) { _records.Clear(); _finished.Clear(); }
         Changed?.Invoke();
     }
 

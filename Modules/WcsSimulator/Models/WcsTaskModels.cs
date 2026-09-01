@@ -1,4 +1,4 @@
-namespace GRCS.Dashboard.Modules.WcsSimulator.Models.TWD;
+namespace GRCS.Dashboard.Modules.WcsSimulator.Models;
 
 /// <summary>
 /// 发送给 GRCS 的任务组，对应后端 ZkWcsTaskGroupInfo。
@@ -44,32 +44,6 @@ public class WcsTaskItem
 
     /// <summary>区域编码（预留，暂未使用）</summary>
     public List<string> AreaCode { get; set; } = [];
-}
-
-/// <summary>GRCS 后端 task_receive 接口返回的响应。</summary>
-public class WcsTaskGroupResponse
-{
-    /// <summary>任务组整体受理结果。</summary>
-    public bool Success { get; set; }
-
-    /// <summary>后端异常信息（非空 = 受理失败，展示给用户定位原因）。</summary>
-    public string? Exception { get; set; }
-
-    /// <summary>后端返回的消息文本。</summary>
-    public string? Message { get; set; }
-
-    /// <summary>逐任务响应列表（部分任务被拒时逐个说明原因）。</summary>
-    public List<WcsTaskResponse>? Tasks { get; set; }
-}
-
-/// <summary>单个任务的响应信息。</summary>
-public class WcsTaskResponse
-{
-    /// <summary>对应下发的任务 ID。</summary>
-    public string? TaskId { get; set; }
-
-    /// <summary>该任务的处理消息。</summary>
-    public string? Message { get; set; }
 }
 
 /// <summary>任务台账条目（localStorage grcs_task_ledger，唯一数据源）。

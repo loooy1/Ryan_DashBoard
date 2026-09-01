@@ -29,16 +29,6 @@ public class AutomationHub : IDisposable
     // ── 信号确认状态（kind → 行；跨标签页同步，SignalInteraction 确认/已发送集合的事实源）──
     public Dictionary<string, List<WorkflowStateRowDto>> ConfirmState { get; private set; } = [];
 
-    /// <summary>分拣 sent 行的编辑参数（未发送/不存在返回 null）。</summary>
-    public SortingSendParams? SentParams(string taskId)
-    {
-        if (!ConfirmState.TryGetValue("sent", out var rows)) return null;
-        var row = rows.FirstOrDefault(r => r.TaskId == taskId);
-        if (row?.Value is not string v || string.IsNullOrWhiteSpace(v)) return null;
-        try { return System.Text.Json.JsonSerializer.Deserialize<SortingSendParams>(v, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
-        catch { return null; }
-    }
-
     public event Action? Changed;
 
     public AutomationHub(WcsApiClient api, BackendHealthService health)
@@ -63,13 +53,6 @@ public class AutomationHub : IDisposable
     {
         try { await PollAsync(); }
         catch { }
-    }
-
-    /// <summary>乐观更新：POST 启停成功后立即反映到快照，不等下一轮轮询（其余字段仍由轮询覆盖）。</summary>
-    public void ApplyRunning(bool running)
-    {
-        Status.Running = running;
-        Changed?.Invoke();
     }
 
     /// <summary>乐观更新：信号自动开关（到达/移除/分拣）POST 后立即反映到快照，不等下一轮轮询。</summary>
